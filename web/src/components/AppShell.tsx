@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
-import { useWorkspace } from '../context/WorkspaceContext'
+import { useWorkspace } from '../hooks/useWorkspace'
 
 const pageConfig: Record<string, { title: string; subtitle: string; runActions?: boolean }> = {
   '/workflows': {

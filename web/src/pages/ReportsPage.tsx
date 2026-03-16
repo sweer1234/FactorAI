@@ -1,9 +1,8 @@
-import { useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useWorkspace } from '../context/WorkspaceContext'
+import { useWorkspace } from '../hooks/useWorkspace'
 
 export function ReportsPage() {
-  const { workflowId = '', } = useParams()
+  const { workflowId = '' } = useParams()
   const { workflows, getReportByWorkflowId, runWorkflow } = useWorkspace()
   const workflow = workflows.find((item) => item.id === workflowId)
   const report = workflow ? getReportByWorkflowId(workflow.id) : undefined
@@ -11,18 +10,18 @@ export function ReportsPage() {
   const metrics = report?.metrics ?? []
   const layerReturn = report?.layerReturn ?? []
 
-  const equityPoints = useMemo(() => {
-    if (equitySeries.length === 0) return ''
+  let equityPoints = ''
+  if (equitySeries.length > 0) {
     const max = Math.max(...equitySeries)
     const min = Math.min(...equitySeries)
-    return equitySeries
+    equityPoints = equitySeries
       .map((value, idx) => {
         const x = (idx / (equitySeries.length - 1)) * 100
         const y = 90 - ((value - min) / (max - min || 1)) * 70
         return `${x},${y}`
       })
       .join(' ')
-  }, [equitySeries])
+  }
 
   if (!workflow) {
     return (

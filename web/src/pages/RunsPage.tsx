@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useWorkspace } from '../context/WorkspaceContext'
+import { useWorkspace } from '../hooks/useWorkspace'
 
 const statusLabel = {
   queued: '排队中',

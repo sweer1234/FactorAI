@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Controls,
@@ -12,7 +12,7 @@ import {
   type Node,
 } from '@xyflow/react'
 import { Link, useParams } from 'react-router-dom'
-import { useWorkspace } from '../context/WorkspaceContext'
+import { useWorkspace } from '../hooks/useWorkspace'
 import type { GraphNode } from '../types'
 
 function styleByVariant(variant?: GraphNode['styleVariant']) {
@@ -63,6 +63,7 @@ export function EditorPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(toReactNodes(graph?.nodes ?? []))
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>((graph?.edges ?? []).map((edge) => ({ ...edge })))
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const nodeSeqRef = useRef(1000)
 
   useEffect(() => {
     const seedNodes = toReactNodes(graph?.nodes ?? [])
@@ -114,7 +115,8 @@ export function EditorPage() {
 
   const addNodeFromLibrary = (name: string) => {
     const definition = nodeLibrary.find((item) => item.name === name)
-    const nextId = `n${Date.now().toString(36)}`
+    nodeSeqRef.current += 1
+    const nextId = `n${nodeSeqRef.current}`
     const styleVariant = definition?.category.startsWith('01')
       ? 'data'
       : definition?.category.startsWith('02')

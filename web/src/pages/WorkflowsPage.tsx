@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useWorkspace } from '../context/WorkspaceContext'
+import { useWorkspace } from '../hooks/useWorkspace'
 import type { Workflow } from '../types'
 
 const statusLabel = {

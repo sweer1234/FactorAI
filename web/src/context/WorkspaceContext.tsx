@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useEffect, useState, type ReactNode } from 'react'
 import { nodeLibrary, runRecords, seededGraphs, seededReports, templates, workflowList } from '../data/mock'
 import type {
   ReportMetric,
@@ -42,7 +43,7 @@ interface PersistedState {
   reports: Record<string, ReportSnapshot>
 }
 
-const WorkspaceContext = createContext<WorkspaceStore | null>(null)
+export const WorkspaceContext = createContext<WorkspaceStore | null>(null)
 
 function nowText() {
   const dt = new Date()
@@ -200,7 +201,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }
 
   const saveWorkflowDraft: WorkspaceStore['saveWorkflowDraft'] = (workflowId) => {
-    const nextWorkflows = workflows.map((item) =>
+    const nextWorkflows: Workflow[] = workflows.map((item) =>
       item.id === workflowId ? { ...item, status: 'draft', updatedAt: nowText() } : item,
     )
     setWorkflows(nextWorkflows)
@@ -241,7 +242,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       message: '任务已进入队列，等待调度。',
     }
     const nextRuns = [queuedRun, ...runs]
-    const nextWorkflows = workflows.map((item) =>
+    const nextWorkflows: Workflow[] = workflows.map((item) =>
       item.id === workflowId ? { ...item, status: 'running', lastRun: createdAt, updatedAt: createdAt } : item,
     )
     setRuns(nextRuns)
@@ -272,7 +273,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         return nextReports
       })
       setWorkflows((prev) => {
-        const finalWorkflows = prev.map((item) =>
+        const finalWorkflows: Workflow[] = prev.map((item) =>
           item.id === workflowId ? { ...item, status: 'published', lastRun: nowText() } : item,
         )
         return finalWorkflows
@@ -281,40 +282,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }, 2800)
   }
 
-  const getGraphByWorkflowId = (workflowId: string) => {
-    return graphs[workflowId]
+  const value: WorkspaceStore = {
+    workflows,
+    templates,
+    runs,
+    nodeLibrary,
+    reports,
+    getGraphByWorkflowId: (workflowId) => graphs[workflowId],
+    createWorkflow,
+    cloneTemplate,
+    saveWorkflowGraph,
+    saveWorkflowDraft,
+    runWorkflow,
+    getReportByWorkflowId: (workflowId) => reports[workflowId],
+    notice,
   }
-
-  const getReportByWorkflowId = (workflowId: string) => {
-    return reports[workflowId]
-  }
-
-  const value = useMemo<WorkspaceStore>(
-    () => ({
-      workflows,
-      templates,
-      runs,
-      nodeLibrary,
-      reports,
-      getGraphByWorkflowId,
-      createWorkflow,
-      cloneTemplate,
-      saveWorkflowGraph,
-      saveWorkflowDraft,
-      runWorkflow,
-      getReportByWorkflowId,
-      notice,
-    }),
-    [workflows, runs, reports, notice],
-  )
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
-}
-
-export function useWorkspace() {
-  const context = useContext(WorkspaceContext)
-  if (!context) {
-    throw new Error('useWorkspace 必须在 WorkspaceProvider 内使用')
-  }
-  return context
 }
