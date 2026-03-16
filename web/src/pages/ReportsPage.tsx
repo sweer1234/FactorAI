@@ -1,8 +1,18 @@
 import { useMemo } from 'react'
-import { equitySeries, layerReturn, reportMetrics } from '../data/mock'
+import { Link, useParams } from 'react-router-dom'
+import { useWorkspace } from '../context/WorkspaceContext'
 
 export function ReportsPage() {
+  const { workflowId = '', } = useParams()
+  const { workflows, getReportByWorkflowId, runWorkflow } = useWorkspace()
+  const workflow = workflows.find((item) => item.id === workflowId)
+  const report = workflow ? getReportByWorkflowId(workflow.id) : undefined
+  const equitySeries = report?.equitySeries ?? []
+  const metrics = report?.metrics ?? []
+  const layerReturn = report?.layerReturn ?? []
+
   const equityPoints = useMemo(() => {
+    if (equitySeries.length === 0) return ''
     const max = Math.max(...equitySeries)
     const min = Math.min(...equitySeries)
     return equitySeries
@@ -12,16 +22,46 @@ export function ReportsPage() {
         return `${x},${y}`
       })
       .join(' ')
-  }, [])
+  }, [equitySeries])
+
+  if (!workflow) {
+    return (
+      <section className="panel empty-state">
+        <h3>未找到工作流</h3>
+        <p>该工作流可能不存在或已被删除。</p>
+        <Link to="/workflows" className="primary">
+          返回工作流列表
+        </Link>
+      </section>
+    )
+  }
+
+  if (!report) {
+    return (
+      <section className="panel empty-state">
+        <h3>暂无研究报告</h3>
+        <p>先运行一次工作流，系统将自动生成因子表现报告。</p>
+        <div className="header-actions">
+          <button type="button" className="primary" onClick={() => runWorkflow(workflow.id)}>
+            立即运行
+          </button>
+          <Link to={`/editor/${workflow.id}`} className="primary ghost">
+            打开编辑器
+          </Link>
+        </div>
+      </section>
+    )
+  }
 
   return (
     <div className="report-grid">
       <section className="panel">
         <div className="panel-header">
-          <h3>核心指标</h3>
+          <h3>核心指标 · {report.workflowName}</h3>
+          <span className="tag">更新于 {report.updatedAt}</span>
         </div>
         <div className="metric-grid">
-          {reportMetrics.map((metric) => (
+          {metrics.map((metric) => (
             <article key={metric.label} className="metric-card">
               <span>{metric.label}</span>
               <strong>{metric.value}</strong>
@@ -36,7 +76,7 @@ export function ReportsPage() {
           <h3>净值曲线（回测）</h3>
         </div>
         <svg viewBox="0 0 100 100" className="line-chart" role="img" aria-label="equity curve">
-          <polyline points={equityPoints} />
+          {equityPoints ? <polyline points={equityPoints} /> : null}
         </svg>
       </section>
 

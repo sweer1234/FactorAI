@@ -75,6 +75,33 @@ a {
   font-size: 17px;
 }
 
+.landing-kv {
+  margin-top: 34px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.landing-kv article {
+  background: rgba(16, 28, 58, 0.5);
+  border: 1px solid #2f4477;
+  border-radius: 12px;
+  padding: 12px;
+  text-align: left;
+}
+
+.landing-kv strong {
+  display: block;
+  font-size: 14px;
+}
+
+.landing-kv span {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  color: #9db1dc;
+}
+
 .pill {
   display: inline-flex;
   padding: 8px 16px;
@@ -236,6 +263,12 @@ a {
   font-size: 16px;
 }
 
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .search-input {
   background: #0a1224;
   border: 1px solid #223760;
@@ -336,6 +369,7 @@ a {
   cursor: pointer;
   font-size: 13px;
   text-decoration: none;
+  appearance: none;
 }
 
 .button-link.ghost,
@@ -349,6 +383,7 @@ a {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 14px;
+  margin-top: 14px;
 }
 
 .template-card {
@@ -419,6 +454,14 @@ a {
   gap: 14px;
   font-size: 12px;
   color: #7f95c8;
+}
+
+select {
+  background: #0b1222;
+  border: 1px solid #284277;
+  border-radius: 9px;
+  color: #cdddfb;
+  padding: 8px 10px;
 }
 
 .report-grid {
@@ -618,6 +661,95 @@ a {
   font-size: 12px;
 }
 
+.muted {
+  color: #8299cb;
+  font-size: 13px;
+}
+
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 20px;
+  background: #0f1f3f;
+  border: 1px solid #355ca9;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #d8e5ff;
+  font-size: 13px;
+  z-index: 20;
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 9, 18, 0.7);
+  display: grid;
+  place-items: center;
+  z-index: 30;
+}
+
+.modal-card {
+  width: min(560px, 92vw);
+  background: #0b1428;
+  border: 1px solid #284172;
+  border-radius: 14px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.modal-card h3 {
+  margin: 0 0 4px;
+}
+
+.modal-card label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #9bb0db;
+}
+
+.modal-card input,
+.modal-card textarea {
+  background: #091025;
+  border: 1px solid #243c6c;
+  border-radius: 8px;
+  color: #dbe7ff;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.modal-card textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.empty-state {
+  display: grid;
+  gap: 8px;
+}
+
+.empty-state h3 {
+  margin: 0;
+}
+
+.empty-state p {
+  margin: 0;
+  color: #9cb0d9;
+}
+
+.empty-card {
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
 @media (max-width: 1260px) {
   .layout {
     grid-template-columns: 90px 1fr;
@@ -637,5 +769,9 @@ a {
   .editor-layout {
     grid-template-columns: 1fr;
     height: auto;
+  }
+
+  .landing-kv {
+    grid-template-columns: 1fr;
   }
 }
