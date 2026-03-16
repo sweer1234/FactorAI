@@ -70,8 +70,14 @@ export function EditorPage() {
     const seedEdges = (graph?.edges ?? []).map((edge) => ({ ...edge }))
     setNodes(seedNodes)
     setEdges(seedEdges)
-    setSelectedNodeId(seedNodes[0]?.id ?? null)
   }, [workflowId])
+
+  const currentSelectedNodeId = useMemo(() => {
+    if (selectedNodeId && nodes.some((item) => item.id === selectedNodeId)) {
+      return selectedNodeId
+    }
+    return nodes[0]?.id ?? null
+  }, [selectedNodeId, nodes])
 
   useEffect(() => {
     if (!workflow) return
@@ -105,9 +111,9 @@ export function EditorPage() {
   }, [nodeLibrary, keyword])
 
   const selectedDefinition = useMemo(() => {
-    const nodeName = nodes.find((item) => item.id === selectedNodeId)?.data?.label
+    const nodeName = nodes.find((item) => item.id === currentSelectedNodeId)?.data?.label
     return nodeLibrary.find((item) => item.name === nodeName) ?? nodeLibrary[0]
-  }, [nodes, selectedNodeId, nodeLibrary])
+  }, [nodes, currentSelectedNodeId, nodeLibrary])
 
   const onConnect = (params: Connection) => {
     setEdges((eds) => addEdge({ ...params, animated: true }, eds))
@@ -227,7 +233,7 @@ export function EditorPage() {
       <aside className="editor-right panel">
         <div className="panel-header">
           <h3>节点详情</h3>
-          <span className="tag">{selectedNodeId ? `节点 ${selectedNodeId}` : '未选择'}</span>
+          <span className="tag">{currentSelectedNodeId ? `节点 ${currentSelectedNodeId}` : '未选择'}</span>
         </div>
         <article className="node-detail">
           <h4>{selectedDefinition.name}</h4>
