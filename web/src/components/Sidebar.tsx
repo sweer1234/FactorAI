@@ -14,10 +14,10 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-logo">P</div>
+        <div className="brand-logo">F</div>
         <div>
-          <p className="brand-title">PandaFactor</p>
-          <p className="brand-subtitle">QuantFlow</p>
+          <p className="brand-title">FactorLab One</p>
+          <p className="brand-subtitle">Research Studio</p>
         </div>
       </div>
       <nav className="nav-list">

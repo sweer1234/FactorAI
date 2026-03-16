@@ -4,11 +4,14 @@ import { BrowserRouter } from 'react-router-dom'
 import '@xyflow/react/dist/style.css'
 import './index.css'
 import App from './App.tsx'
+import { WorkspaceProvider } from './context/WorkspaceContext.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <WorkspaceProvider>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </WorkspaceProvider>
   </StrictMode>,
 )
