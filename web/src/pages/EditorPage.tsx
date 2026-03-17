@@ -59,19 +59,19 @@ export function EditorPage() {
   const [keyword, setKeyword] = useState('')
   const workflow = workflows.find((item) => item.id === workflowId)
   const graph = workflow ? getGraphByWorkflowId(workflow.id) : undefined
+  const seedNodes = useMemo(() => toReactNodes(graph?.nodes ?? []), [graph?.nodes])
+  const seedEdges = useMemo(() => (graph?.edges ?? []).map((edge) => ({ ...edge })), [graph?.edges])
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(toReactNodes(graph?.nodes ?? []))
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>((graph?.edges ?? []).map((edge) => ({ ...edge })))
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(seedNodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(seedEdges)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const nodeSeqRef = useRef(1000)
   const saveDebounceRef = useRef<number | null>(null)
 
   useEffect(() => {
-    const seedNodes = toReactNodes(graph?.nodes ?? [])
-    const seedEdges = (graph?.edges ?? []).map((edge) => ({ ...edge }))
     setNodes(seedNodes)
     setEdges(seedEdges)
-  }, [workflowId])
+  }, [workflowId, seedNodes, seedEdges, setNodes, setEdges])
 
   const currentSelectedNodeId = useMemo(() => {
     if (selectedNodeId && nodes.some((item) => item.id === selectedNodeId)) {
@@ -96,7 +96,7 @@ export function EditorPage() {
         })),
       })
     }, 320)
-  }, [nodes, edges])
+  }, [nodes, edges, saveWorkflowGraph, workflow?.id])
 
   const groupedLibrary = useMemo(() => {
     const filtered = nodeLibrary.filter((item) => {
