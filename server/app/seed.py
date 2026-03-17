@@ -16,10 +16,10 @@ def _dt(text: str | None) -> datetime | None:
 
 
 def _seed_node_specs(session: Session) -> None:
-    existing = session.exec(select(NodeSpec.id)).first()
-    if existing:
-        return
+    existing_ids = set(session.exec(select(NodeSpec.id)).all())
     for row in NODE_LIBRARY_CATALOG:
+        if row["id"] in existing_ids:
+            continue
         session.add(
             NodeSpec(
                 id=row["id"],
@@ -38,11 +38,15 @@ def _seed_node_specs(session: Session) -> None:
 
 
 def _seed_templates(session: Session) -> None:
-    existing = session.exec(select(Template.id)).first()
-    if existing:
-        return
+    existing_ids = set(session.exec(select(Template.id)).all())
+    existing_version_pairs = {
+        (row[0], row[1])
+        for row in session.exec(select(TemplateVersion.template_id, TemplateVersion.version)).all()
+    }
 
     for row in TEMPLATE_CATALOG:
+        if row["id"] in existing_ids:
+            continue
         updated_at = _dt(row["updated_at"]) or datetime.utcnow()
         template = Template(
             id=row["id"],
@@ -56,25 +60,26 @@ def _seed_templates(session: Session) -> None:
             graph=row["graph"],
         )
         session.add(template)
-        session.add(
-            TemplateVersion(
-                id=f"tv-{uuid.uuid4().hex[:10]}",
-                template_id=template.id,
-                version="1.0.0",
-                changelog="初始化模板版本",
-                graph=template.graph,
-                created_at=updated_at,
+        if (template.id, "1.0.0") not in existing_version_pairs:
+            session.add(
+                TemplateVersion(
+                    id=f"tv-{uuid.uuid4().hex[:10]}",
+                    template_id=template.id,
+                    version="1.0.0",
+                    changelog="初始化模板版本",
+                    graph=template.graph,
+                    created_at=updated_at,
+                )
             )
-        )
     session.commit()
 
 
 def _seed_workflows(session: Session) -> None:
-    existing = session.exec(select(Workflow.id)).first()
-    if existing:
-        return
+    existing_ids = set(session.exec(select(Workflow.id)).all())
 
     for row in WORKFLOW_SEED_CATALOG:
+        if row["id"] in existing_ids:
+            continue
         session.add(
             Workflow(
                 id=row["id"],

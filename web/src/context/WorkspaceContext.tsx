@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useEffect, useState, type ReactNode } from 'react'
 import {
   cloneTemplate as apiCloneTemplate,
   createWorkflow as apiCreateWorkflow,
@@ -257,32 +257,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return nodeStatesByRunId[runId] ?? []
   }
 
-  const value = useMemo<WorkspaceStore>(
-    () => ({
-      workflows,
-      templates,
-      runs,
-      nodeLibrary,
-      reports,
-      runLogsByRunId,
-      nodeStatesByRunId,
-      loading,
-      backendOnline,
-      getGraphByWorkflowId,
-      getLatestRunByWorkflowId,
-      getRunLogs,
-      getNodeStates,
-      createWorkflow,
-      cloneTemplate,
-      saveWorkflowGraph,
-      saveWorkflowDraft,
-      runWorkflow,
-      getReportByWorkflowId,
-      refreshExecutionByWorkflowId,
-      notice,
-    }),
-    [workflows, templates, runs, nodeLibrary, reports, runLogsByRunId, nodeStatesByRunId, loading, backendOnline, notice],
-  )
+  const value: WorkspaceStore = {
+    workflows,
+    templates,
+    runs,
+    nodeLibrary,
+    reports,
+    runLogsByRunId,
+    nodeStatesByRunId,
+    loading,
+    backendOnline,
+    getGraphByWorkflowId,
+    getLatestRunByWorkflowId,
+    getRunLogs,
+    getNodeStates,
+    createWorkflow,
+    cloneTemplate,
+    saveWorkflowGraph,
+    saveWorkflowDraft,
+    runWorkflow,
+    getReportByWorkflowId,
+    refreshExecutionByWorkflowId,
+    notice,
+  }
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }

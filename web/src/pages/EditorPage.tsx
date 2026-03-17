@@ -84,7 +84,12 @@ export function EditorPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const nodeSeqRef = useRef(2000)
   const saveDebounceRef = useRef<number | null>(null)
+  const refreshExecutionRef = useRef(refreshExecutionByWorkflowId)
   const activeWorkflowId = workflow?.id
+
+  useEffect(() => {
+    refreshExecutionRef.current = refreshExecutionByWorkflowId
+  }, [refreshExecutionByWorkflowId])
 
   useEffect(() => {
     setNodes(seedNodes)
@@ -111,8 +116,8 @@ export function EditorPage() {
 
   useEffect(() => {
     if (!workflow?.id) return
-    void refreshExecutionByWorkflowId(workflow.id)
-  }, [workflow?.id, refreshExecutionByWorkflowId])
+    void refreshExecutionRef.current(workflow.id)
+  }, [workflow?.id])
 
   const currentSelectedNodeId = useMemo(() => {
     if (selectedNodeId && nodes.some((item) => item.id === selectedNodeId)) {
@@ -146,9 +151,7 @@ export function EditorPage() {
   const latestRun = workflow ? getLatestRunByWorkflowId(workflow.id) : undefined
   const runLogs = getRunLogs(latestRun?.id)
   const nodeStates = getNodeStates(latestRun?.id)
-  const nodeStateMap = useMemo(() => {
-    return new Map(nodeStates.map((item) => [item.nodeId, item]))
-  }, [nodeStates])
+  const nodeStateMap = new Map(nodeStates.map((item) => [item.nodeId, item]))
 
   const currentNodeList = useMemo(() => {
     return [...nodes].sort((a, b) => a.position.x - b.position.x).map((node) => {
