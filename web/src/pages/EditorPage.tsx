@@ -176,7 +176,7 @@ export function EditorPage() {
   const latestRun = workflow ? getLatestRunByWorkflowId(workflow.id) : undefined
   const runLogs = getRunLogs(latestRun?.id)
   const nodeStates = getNodeStates(latestRun?.id)
-  const artifacts = getArtifactsByWorkflowId(workflow.id)
+  const artifacts = workflow ? getArtifactsByWorkflowId(workflow.id) : []
   const nodeStateMap = new Map(nodeStates.map((item) => [item.nodeId, item]))
 
   const currentNodeList = [...nodes].sort((a, b) => a.position.x - b.position.x).map((node) => {
@@ -270,7 +270,7 @@ export function EditorPage() {
   const onUploadClicked = () => fileRef.current?.click()
   const onUploadSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
-    if (!file) return
+    if (!file || !workflow) return
     try {
       await uploadArtifactForWorkflow(workflow.id, file, 'node-input')
       setEditorNotice(`上传成功：${file.name}`)
