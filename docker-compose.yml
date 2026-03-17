@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: factorai-backend
+    restart: unless-stopped
+    environment:
+      FACTORAI_SQLITE_PATH: /data/factorai.db
+      FACTORAI_CORS_ORIGINS: http://localhost,http://127.0.0.1
+    volumes:
+      - factorai_data:/data
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: factorai-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  factorai_data:

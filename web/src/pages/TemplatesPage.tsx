@@ -17,8 +17,8 @@ export function TemplatesPage() {
     )
   })
 
-  const handleUseTemplate = (templateId: string) => {
-    const workflowId = cloneTemplate(templateId)
+  const handleUseTemplate = async (templateId: string) => {
+    const workflowId = await cloneTemplate(templateId)
     if (!workflowId) return
     navigate(`/editor/${workflowId}`)
   }
@@ -55,11 +55,11 @@ export function TemplatesPage() {
               <button
                 type="button"
                 className="primary ghost"
-                onClick={() => handleUseTemplate(item.id)}
+                onClick={() => void handleUseTemplate(item.id)}
               >
                 复制模板
               </button>
-              <button type="button" className="primary" onClick={() => handleUseTemplate(item.id)}>
+              <button type="button" className="primary" onClick={() => void handleUseTemplate(item.id)}>
                 立即使用
               </button>
             </div>

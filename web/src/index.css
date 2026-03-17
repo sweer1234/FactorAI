@@ -243,6 +243,16 @@ a {
   padding: 18px 20px 24px;
 }
 
+.offline-tip {
+  margin: 0 0 10px;
+  color: #ffca96;
+  font-size: 13px;
+  background: rgba(122, 63, 21, 0.25);
+  border: 1px solid #7f5126;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
 .panel {
   background: rgba(11, 17, 33, 0.85);
   border: 1px solid #1a2849;
@@ -454,6 +464,28 @@ a {
   gap: 14px;
   font-size: 12px;
   color: #7f95c8;
+}
+
+.run-logs {
+  margin-bottom: 8px;
+}
+
+.run-logs summary {
+  cursor: pointer;
+  color: #9dc0ff;
+  font-size: 12px;
+}
+
+.run-logs pre {
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: #081126;
+  border: 1px solid #1d3665;
+  max-height: 150px;
+  overflow: auto;
+  color: #bad1ff;
+  font-size: 12px;
 }
 
 select {

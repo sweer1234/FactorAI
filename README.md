@@ -14,11 +14,25 @@ FactorAI 是一个因子研究系统原型，聚焦于：
 │   ├── PRD.md
 │   ├── 技术架构.md
 │   ├── 节点协议规范.md
-│   └── 开发计划.md
-└── web/                       # 前端成品（React + TS + Vite）
+│   ├── 开发计划.md
+│   └── 部署指南.md
+├── server/                    # 后端服务（FastAPI + SQLite + 执行引擎）
+└── web/                       # 前端应用（React + TS + Vite）
 ```
 
 ## 快速开始
+
+后端：
+
+```bash
+cd server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+前端：
 
 ```bash
 cd web
@@ -27,6 +41,8 @@ npm run dev
 ```
 
 默认访问地址：`http://localhost:5173`
+
+前端默认请求：`http://localhost:8000/api`
 
 ## 已实现页面（MVP）
 
@@ -42,9 +58,10 @@ npm run dev
 - 创建工作流并跳转编辑器
 - 从模板复制生成新工作流
 - 编辑器节点增删连线与自动保存
-- 保存草稿 / 运行工作流（会生成运行记录）
-- 运行完成后自动刷新对应报告
-- 所有数据本地持久化（localStorage）
+- 保存草稿 / 运行工作流（后端异步执行）
+- 运行中心实时刷新任务状态与日志
+- 报告按运行结果自动更新
+- Python 节点沙箱执行（超时 + 内存限制）
 
 ## 后续计划
 

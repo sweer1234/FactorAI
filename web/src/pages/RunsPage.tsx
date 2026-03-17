@@ -40,6 +40,12 @@ export function RunsPage() {
               <span className={`badge ${run.status}`}>{statusLabel[run.status]}</span>
             </div>
             <p>{run.message}</p>
+            {run.logs && run.logs.length > 0 ? (
+              <details className="run-logs">
+                <summary>查看日志</summary>
+                <pre>{run.logs.join('\n')}</pre>
+              </details>
+            ) : null}
             <div className="run-meta">
               <span>任务ID: {run.id}</span>
               <span>耗时: {run.duration}</span>

@@ -43,6 +43,10 @@ export const workflowList: Workflow[] = [
     updatedAt: '2026-03-15 00:32:11',
     lastRun: '2026-03-15 00:35:18',
     description: '用于商品期货主力合约的多因子排序与回测。',
+    graph: {
+      nodes: cloneGraphNodes(baseNodes),
+      edges: cloneGraphEdges(baseEdges),
+    },
   },
   {
     id: 'wf-002',
@@ -53,6 +57,12 @@ export const workflowList: Workflow[] = [
     updatedAt: '2026-03-14 21:21:09',
     lastRun: '2026-03-14 21:30:44',
     description: '在滚动窗口下搜索稳健参数组合。',
+    graph: {
+      nodes: cloneGraphNodes(baseNodes).map((item) =>
+        item.label === 'XGBoost模型' ? { ...item, label: '超参数搜索(Optuna)' } : item,
+      ),
+      edges: cloneGraphEdges(baseEdges),
+    },
   },
   {
     id: 'wf-003',
@@ -62,6 +72,17 @@ export const workflowList: Workflow[] = [
     status: 'draft',
     updatedAt: '2026-03-13 18:10:51',
     description: '跨品种择时与仓位分配实验。',
+    graph: {
+      nodes: [
+        { id: 'c1', label: '行情数据读取', position: { x: 40, y: 120 }, styleVariant: 'data' },
+        { id: 'c2', label: '自定义因子构建', position: { x: 280, y: 120 }, styleVariant: 'factor' },
+        { id: 'c3', label: '期货回测', position: { x: 520, y: 120 }, styleVariant: 'backtest' },
+      ],
+      edges: [
+        { id: 'ce1', source: 'c1', target: 'c2' },
+        { id: 'ce2', source: 'c2', target: 'c3', animated: true },
+      ],
+    },
   },
 ]
 

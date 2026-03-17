@@ -11,6 +11,7 @@ export interface Workflow {
   lastRun?: string
   description?: string
   sourceTemplateId?: string
+  graph: WorkflowGraph
 }
 
 export interface Template {
@@ -69,6 +70,7 @@ export interface RunRecord {
   duration: string
   createdAt: string
   message: string
+  logs?: string[]
 }
 
 export interface ReportMetric {

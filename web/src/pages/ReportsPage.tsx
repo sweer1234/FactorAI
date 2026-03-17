@@ -41,7 +41,7 @@ export function ReportsPage() {
         <h3>暂无研究报告</h3>
         <p>先运行一次工作流，系统将自动生成因子表现报告。</p>
         <div className="header-actions">
-          <button type="button" className="primary" onClick={() => runWorkflow(workflow.id)}>
+          <button type="button" className="primary" onClick={() => void runWorkflow(workflow.id)}>
             立即运行
           </button>
           <Link to={`/editor/${workflow.id}`} className="primary ghost">

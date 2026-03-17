@@ -64,6 +64,7 @@ export function EditorPage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>((graph?.edges ?? []).map((edge) => ({ ...edge })))
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const nodeSeqRef = useRef(1000)
+  const saveDebounceRef = useRef<number | null>(null)
 
   useEffect(() => {
     const seedNodes = toReactNodes(graph?.nodes ?? [])
@@ -81,15 +82,20 @@ export function EditorPage() {
 
   useEffect(() => {
     if (!workflow) return
-    saveWorkflowGraph(workflow.id, {
-      nodes: toGraphNodes(nodes),
-      edges: edges.map((edge) => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        animated: Boolean(edge.animated),
-      })),
-    })
+    if (saveDebounceRef.current) {
+      window.clearTimeout(saveDebounceRef.current)
+    }
+    saveDebounceRef.current = window.setTimeout(() => {
+      void saveWorkflowGraph(workflow.id, {
+        nodes: toGraphNodes(nodes),
+        edges: edges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          animated: Boolean(edge.animated),
+        })),
+      })
+    }, 320)
   }, [nodes, edges])
 
   const groupedLibrary = useMemo(() => {
@@ -208,7 +214,7 @@ export function EditorPage() {
             <button type="button" className="primary ghost" onClick={removeSelectedNode}>
               删除选中节点
             </button>
-            <button type="button" className="primary" onClick={() => runWorkflow(workflow.id)}>
+            <button type="button" className="primary" onClick={() => void runWorkflow(workflow.id)}>
               快速运行
             </button>
           </div>

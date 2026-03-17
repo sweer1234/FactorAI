@@ -1,24 +1,32 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useEffect, useState, type ReactNode } from 'react'
-import { nodeLibrary, runRecords, seededGraphs, seededReports, templates, workflowList } from '../data/mock'
-import type {
-  ReportMetric,
-  ReportSnapshot,
-  RunRecord,
-  RunStatus,
-  Template,
-  Workflow,
-  WorkflowGraph,
-} from '../types'
+import {
+  cloneTemplate as apiCloneTemplate,
+  createWorkflow as apiCreateWorkflow,
+  fetchBootstrap,
+  fetchReport,
+  fetchRuns,
+  fetchWorkflows,
+  runWorkflow as apiRunWorkflow,
+  saveWorkflowDraft as apiSaveWorkflowDraft,
+  saveWorkflowGraph as apiSaveWorkflowGraph,
+} from '../api/client'
+import {
+  nodeLibrary as fallbackNodeLibrary,
+  runRecords as fallbackRuns,
+  templates as fallbackTemplates,
+  workflowList,
+} from '../data/mock'
+import type { NodeDefinition, ReportSnapshot, RunRecord, Template, Workflow, WorkflowGraph } from '../types'
 
-const STORAGE_KEY = 'factorlab.workspace.v2'
-
-interface WorkspaceStore {
+export interface WorkspaceStore {
   workflows: Workflow[]
   templates: Template[]
   runs: RunRecord[]
-  nodeLibrary: typeof nodeLibrary
+  nodeLibrary: NodeDefinition[]
   reports: Record<string, ReportSnapshot>
+  loading: boolean
+  backendOnline: boolean
   getGraphByWorkflowId: (workflowId: string) => WorkflowGraph | undefined
   createWorkflow: (payload: {
     name: string
@@ -26,261 +34,170 @@ interface WorkspaceStore {
     tags: string[]
     description?: string
     graph?: WorkflowGraph
-    sourceTemplateId?: string
-  }) => string
-  cloneTemplate: (templateId: string) => string | null
-  saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => void
-  saveWorkflowDraft: (workflowId: string) => void
-  runWorkflow: (workflowId: string) => void
+  }) => Promise<string>
+  cloneTemplate: (templateId: string) => Promise<string | null>
+  saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => Promise<void>
+  saveWorkflowDraft: (workflowId: string) => Promise<void>
+  runWorkflow: (workflowId: string) => Promise<void>
   getReportByWorkflowId: (workflowId: string) => ReportSnapshot | undefined
   notice: string | null
 }
 
-interface PersistedState {
-  workflows: Workflow[]
-  runs: RunRecord[]
-  graphs: Record<string, WorkflowGraph>
-  reports: Record<string, ReportSnapshot>
-}
-
 export const WorkspaceContext = createContext<WorkspaceStore | null>(null)
 
-function nowText() {
-  const dt = new Date()
-  const p = (num: number) => String(num).padStart(2, '0')
-  return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`
-}
-
-function createDuration(startedAt: number) {
-  const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000))
-  const min = Math.floor(elapsed / 60)
-  const sec = elapsed % 60
-  return `${String(min).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`
-}
-
-function cloneGraph(graph?: WorkflowGraph): WorkflowGraph {
-  return {
-    nodes: (graph?.nodes ?? []).map((item) => ({ ...item, position: { ...item.position } })),
-    edges: (graph?.edges ?? []).map((item) => ({ ...item })),
-  }
-}
-
-function generateRunId() {
-  return `run-${Math.random().toString(36).slice(2, 9)}`
-}
-
-function generateWorkflowId() {
-  return `wf-${Math.random().toString(36).slice(2, 8)}`
-}
-
-function formatRate(value: number) {
-  return `${(value * 100).toFixed(1)}%`
-}
-
-function randomMetricSet(seed: number): ReportMetric[] {
-  const base = (value: number, precision = 3) => (value + seed * 0.003).toFixed(precision)
-  const annual = 0.12 + seed * 0.005
-  const drawdown = -(0.04 + seed * 0.002)
-  const turnover = 0.48 + seed * 0.015
-  return [
-    { label: 'IC均值', value: base(0.072), trend: 'up' },
-    { label: 'RankIC', value: base(0.096), trend: 'up' },
-    { label: '年化收益', value: formatRate(annual), trend: 'up' },
-    { label: '最大回撤', value: formatRate(drawdown), trend: 'down' },
-    { label: '夏普比率', value: base(1.61, 2), trend: 'up' },
-    { label: '换手率', value: base(turnover, 2), trend: 'down' },
-  ]
-}
-
-function randomSeries(seed: number) {
-  const values = [1]
-  for (let i = 1; i < 14; i += 1) {
-    const drift = 0.015 + seed * 0.0008
-    const noise = (Math.sin(i + seed) * 0.02 + 0.01) / 2
-    values.push(Number((values[i - 1] * (1 + drift + noise)).toFixed(4)))
-  }
-  return values
-}
-
-function randomLayer(seed: number) {
-  return [
-    { layer: 'Q1', value: Number((-0.02 - seed * 0.001).toFixed(3)) },
-    { layer: 'Q2', value: Number((0.01 + seed * 0.001).toFixed(3)) },
-    { layer: 'Q3', value: Number((0.04 + seed * 0.001).toFixed(3)) },
-    { layer: 'Q4', value: Number((0.08 + seed * 0.001).toFixed(3)) },
-    { layer: 'Q5', value: Number((0.14 + seed * 0.001).toFixed(3)) },
-  ]
-}
-
-function createInitialState(): PersistedState {
-  if (typeof window !== 'undefined') {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      try {
-        return JSON.parse(raw) as PersistedState
-      } catch {
-        // ignore damaged local cache
-      }
-    }
-  }
-  return {
-    workflows: workflowList,
-    runs: runRecords,
-    graphs: seededGraphs,
-    reports: seededReports,
-  }
+function withFallbackGraph(workflows: Workflow[]) {
+  return workflows.map((item) => ({ ...item, graph: item.graph ?? { nodes: [], edges: [] } }))
 }
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const initial = createInitialState()
-  const [workflows, setWorkflows] = useState<Workflow[]>(initial.workflows)
-  const [runs, setRuns] = useState<RunRecord[]>(initial.runs)
-  const [graphs, setGraphs] = useState<Record<string, WorkflowGraph>>(initial.graphs)
-  const [reports, setReports] = useState<Record<string, ReportSnapshot>>(initial.reports)
+  const [workflows, setWorkflows] = useState<Workflow[]>(withFallbackGraph(workflowList))
+  const [templates, setTemplates] = useState<Template[]>(fallbackTemplates)
+  const [runs, setRuns] = useState<RunRecord[]>(fallbackRuns)
+  const [nodeLibrary, setNodeLibrary] = useState<NodeDefinition[]>(fallbackNodeLibrary)
+  const [reports, setReports] = useState<Record<string, ReportSnapshot>>({})
   const [notice, setNotice] = useState<string | null>(null)
-
-  const persist = (next: PersistedState) => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-    }
-  }
+  const [loading, setLoading] = useState(true)
+  const [backendOnline, setBackendOnline] = useState(false)
 
   const updateNotice = (text: string) => {
     setNotice(text)
     window.setTimeout(() => setNotice(null), 2400)
   }
 
+  const refreshWorkflows = async () => {
+    const list = await fetchWorkflows()
+    setWorkflows(withFallbackGraph(list))
+  }
+
+  const refreshRuns = async () => {
+    const list = await fetchRuns()
+    setRuns(list)
+  }
+
+  const refreshReport = async (workflowId: string) => {
+    const report = await fetchReport(workflowId)
+    if (!report) return
+    setReports((prev) => ({ ...prev, [workflowId]: report }))
+  }
+
   useEffect(() => {
-    persist({ workflows, runs, graphs, reports })
-  }, [workflows, runs, graphs, reports])
-
-  const createWorkflow: WorkspaceStore['createWorkflow'] = (payload) => {
-    const id = generateWorkflowId()
-    const createdAt = nowText()
-    const workflow: Workflow = {
-      id,
-      name: payload.name.trim(),
-      category: payload.category.trim(),
-      tags: payload.tags,
-      status: 'draft',
-      updatedAt: createdAt,
-      description: payload.description,
-      sourceTemplateId: payload.sourceTemplateId,
+    const bootstrap = async () => {
+      try {
+        const payload = await fetchBootstrap()
+        setWorkflows(withFallbackGraph(payload.workflows))
+        setTemplates(payload.templates)
+        setRuns(payload.runs)
+        setNodeLibrary(payload.nodeLibrary)
+        setBackendOnline(true)
+      } catch {
+        setBackendOnline(false)
+      } finally {
+        setLoading(false)
+      }
     }
-    const nextWorkflows = [workflow, ...workflows]
-    const nextGraphs = {
-      ...graphs,
-      [id]: cloneGraph(payload.graph),
+    bootstrap()
+  }, [])
+
+  const createWorkflow: WorkspaceStore['createWorkflow'] = async (payload) => {
+    if (!backendOnline) {
+      const localId = `wf-local-${Date.now()}`
+      setWorkflows((prev) => [
+        {
+          id: localId,
+          name: payload.name,
+          category: payload.category,
+          tags: payload.tags,
+          status: 'draft',
+          updatedAt: new Date().toISOString(),
+          description: payload.description,
+          graph: payload.graph ?? { nodes: [], edges: [] },
+        },
+        ...prev,
+      ])
+      updateNotice('本地模式：已创建工作流')
+      return localId
     }
-    setWorkflows(nextWorkflows)
-    setGraphs(nextGraphs)
-    updateNotice(`已创建工作流：${workflow.name}`)
-    return id
+
+    const created = await apiCreateWorkflow(payload)
+    setWorkflows((prev) => [created, ...prev])
+    updateNotice(`已创建工作流：${created.name}`)
+    return created.id
   }
 
-  const cloneTemplate: WorkspaceStore['cloneTemplate'] = (templateId) => {
-    const source = templates.find((item) => item.id === templateId)
-    if (!source) return null
-    const nextId = createWorkflow({
-      name: `${source.name}-副本`,
-      category: source.category,
-      tags: source.tags,
-      description: source.description,
-      graph: source.graph,
-      sourceTemplateId: source.id,
-    })
-    return nextId
-  }
-
-  const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = (workflowId, graph) => {
-    const nextGraphs = {
-      ...graphs,
-      [workflowId]: cloneGraph(graph),
+  const cloneTemplate: WorkspaceStore['cloneTemplate'] = async (templateId) => {
+    if (!backendOnline) {
+      const template = templates.find((item) => item.id === templateId)
+      if (!template) return null
+      const id = await createWorkflow({
+        name: `${template.name}-副本`,
+        category: template.category,
+        tags: template.tags,
+        description: template.description,
+        graph: template.graph,
+      })
+      return id
     }
-    setGraphs(nextGraphs)
+
+    const created = await apiCloneTemplate(templateId)
+    setWorkflows((prev) => [created, ...prev])
+    updateNotice(`模板复制完成：${created.name}`)
+    return created.id
   }
 
-  const saveWorkflowDraft: WorkspaceStore['saveWorkflowDraft'] = (workflowId) => {
-    const nextWorkflows: Workflow[] = workflows.map((item) =>
-      item.id === workflowId ? { ...item, status: 'draft', updatedAt: nowText() } : item,
-    )
-    setWorkflows(nextWorkflows)
-    const workflowName = workflows.find((item) => item.id === workflowId)?.name ?? workflowId
-    updateNotice(`已保存草稿：${workflowName}`)
+  const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = async (workflowId, graph) => {
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? { ...item, graph } : item)))
+    if (!backendOnline) return
+    try {
+      const updated = await apiSaveWorkflowGraph(workflowId, graph)
+      setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? updated : item)))
+    } catch {
+      updateNotice('保存失败：后端不可达')
+    }
   }
 
-  const updateRunStatus = (runId: string, status: RunStatus, message: string, duration?: string) => {
-    setRuns((prev) => {
-      const nextRuns = prev.map((run) =>
-        run.id === runId
-          ? {
-              ...run,
-              status,
-              message,
-              duration: duration ?? run.duration,
-            }
-          : run,
+  const saveWorkflowDraft: WorkspaceStore['saveWorkflowDraft'] = async (workflowId) => {
+    if (!backendOnline) {
+      setWorkflows((prev) =>
+        prev.map((item) =>
+          item.id === workflowId ? { ...item, status: 'draft', updatedAt: new Date().toISOString() } : item,
+        ),
       )
-      return nextRuns
-    })
+      updateNotice('本地模式：草稿已保存')
+      return
+    }
+    const updated = await apiSaveWorkflowDraft(workflowId)
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? updated : item)))
+    updateNotice(`已保存草稿：${updated.name}`)
   }
 
-  const runWorkflow: WorkspaceStore['runWorkflow'] = (workflowId) => {
+  const runWorkflow: WorkspaceStore['runWorkflow'] = async (workflowId) => {
     const workflow = workflows.find((item) => item.id === workflowId)
     if (!workflow) return
 
-    const startedAt = Date.now()
-    const runId = generateRunId()
-    const createdAt = nowText()
-    const queuedRun: RunRecord = {
-      id: runId,
-      workflowId,
-      workflowName: workflow.name,
-      status: 'queued',
-      duration: '00m 00s',
-      createdAt,
-      message: '任务已进入队列，等待调度。',
+    if (!backendOnline) {
+      updateNotice('本地模式：已模拟运行')
+      return
     }
-    const nextRuns = [queuedRun, ...runs]
-    const nextWorkflows: Workflow[] = workflows.map((item) =>
-      item.id === workflowId ? { ...item, status: 'running', lastRun: createdAt, updatedAt: createdAt } : item,
-    )
-    setRuns(nextRuns)
-    setWorkflows(nextWorkflows)
+    await apiRunWorkflow(workflowId)
     updateNotice(`已启动运行：${workflow.name}`)
+    await refreshRuns()
+    await refreshWorkflows()
 
-    window.setTimeout(() => {
-      updateRunStatus(runId, 'running', '正在执行节点链路与参数校验...')
-    }, 650)
-
-    window.setTimeout(() => {
-      const duration = createDuration(startedAt)
-      updateRunStatus(runId, 'success', '执行完成，报告已更新。', duration)
-      const seed = Math.max(1, workflow.name.length % 7)
-      const report: ReportSnapshot = {
-        workflowId,
-        workflowName: workflow.name,
-        metrics: randomMetricSet(seed),
-        equitySeries: randomSeries(seed),
-        layerReturn: randomLayer(seed),
-        updatedAt: nowText(),
+    let round = 0
+    const poll = async () => {
+      round += 1
+      await Promise.all([refreshRuns(), refreshWorkflows(), refreshReport(workflowId)])
+      if (round < 12) {
+        window.setTimeout(poll, 1200)
       }
-      setReports((prev) => {
-        const nextReports = {
-          ...prev,
-          [workflowId]: report,
-        }
-        return nextReports
-      })
-      setWorkflows((prev) => {
-        const finalWorkflows: Workflow[] = prev.map((item) =>
-          item.id === workflowId ? { ...item, status: 'published', lastRun: nowText() } : item,
-        )
-        return finalWorkflows
-      })
-      updateNotice(`运行完成：${workflow.name}`)
-    }, 2800)
+    }
+    window.setTimeout(poll, 1000)
   }
+
+  const getGraphByWorkflowId = (workflowId: string) =>
+    workflows.find((item) => item.id === workflowId)?.graph ?? { nodes: [], edges: [] }
+
+  const getReportByWorkflowId = (workflowId: string) => reports[workflowId]
 
   const value: WorkspaceStore = {
     workflows,
@@ -288,13 +205,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     runs,
     nodeLibrary,
     reports,
-    getGraphByWorkflowId: (workflowId) => graphs[workflowId],
+    loading,
+    backendOnline,
+    getGraphByWorkflowId,
     createWorkflow,
     cloneTemplate,
     saveWorkflowGraph,
     saveWorkflowDraft,
     runWorkflow,
-    getReportByWorkflowId: (workflowId) => reports[workflowId],
+    getReportByWorkflowId,
     notice,
   }
 
