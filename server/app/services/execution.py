@@ -9,8 +9,8 @@ import networkx as nx
 from sqlmodel import Session, select
 
 from ..db import engine
-from ..models import Report, Run, Workflow
-from .node_handlers import RunContext, execute_node_by_label
+from ..models import Report, Run, RunLog, Workflow, WorkflowNodeState
+from .node_handlers import RunContext, execute_node_by_label, handle_backtest
 
 
 executor = ThreadPoolExecutor(max_workers=4)
@@ -21,22 +21,59 @@ def _fmt_duration(start: float, end: float) -> str:
     return f"{seconds // 60:02d}m {seconds % 60:02d}s"
 
 
-def _update_run(run_id: str, *, status: str, message: str, logs: list[str] | None = None, duration: str | None = None):
+def _append_run_log(
+    run_id: str,
+    workflow_id: str,
+    *,
+    level: str,
+    message: str,
+    node_id: str | None = None,
+    node_name: str | None = None,
+) -> None:
+    with Session(engine) as session:
+        session.add(
+            RunLog(
+                id=f"log-{uuid.uuid4().hex[:10]}",
+                run_id=run_id,
+                workflow_id=workflow_id,
+                level=level,
+                node_id=node_id,
+                node_name=node_name,
+                message=message,
+                created_at=datetime.utcnow(),
+            )
+        )
+        run = session.get(Run, run_id)
+        if run:
+            lines = list(run.logs or [])
+            lines.append(f"[{level}] {message}")
+            run.logs = lines[-200:]
+            run.updated_at = datetime.utcnow()
+            session.add(run)
+        session.commit()
+
+
+def _update_run(
+    run_id: str,
+    *,
+    status: str,
+    message: str,
+    duration: str | None = None,
+) -> None:
     with Session(engine) as session:
         run = session.get(Run, run_id)
         if not run:
             return
         run.status = status
         run.message = message
-        if logs is not None:
-            run.logs = logs
+        run.updated_at = datetime.utcnow()
         if duration is not None:
             run.duration = duration
         session.add(run)
         session.commit()
 
 
-def _update_workflow_status(workflow_id: str, status: str):
+def _update_workflow_status(workflow_id: str, status: str) -> None:
     with Session(engine) as session:
         workflow = session.get(Workflow, workflow_id)
         if not workflow:
@@ -49,7 +86,7 @@ def _update_workflow_status(workflow_id: str, status: str):
         session.commit()
 
 
-def _save_report(workflow_id: str, workflow_name: str, payload: dict):
+def _save_report(workflow_id: str, workflow_name: str, payload: dict) -> None:
     with Session(engine) as session:
         report = session.get(Report, workflow_id)
         if report is None:
@@ -68,6 +105,51 @@ def _save_report(workflow_id: str, workflow_name: str, payload: dict):
             report.layer_return = payload.get("layer_return", [])
             report.updated_at = datetime.utcnow()
         session.add(report)
+        session.commit()
+
+
+def _upsert_node_state(
+    run_id: str,
+    workflow_id: str,
+    node_id: str,
+    node_name: str,
+    *,
+    status: str,
+    message: str,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    duration_ms: int = 0,
+) -> None:
+    with Session(engine) as session:
+        state = session.exec(
+            select(WorkflowNodeState).where(
+                WorkflowNodeState.run_id == run_id,
+                WorkflowNodeState.node_id == node_id,
+            )
+        ).first()
+        if state is None:
+            state = WorkflowNodeState(
+                id=f"ns-{uuid.uuid4().hex[:10]}",
+                run_id=run_id,
+                workflow_id=workflow_id,
+                node_id=node_id,
+                node_name=node_name,
+                status=status,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                message=message,
+            )
+        else:
+            state.status = status
+            state.message = message
+            if started_at is not None:
+                state.started_at = started_at
+            if finished_at is not None:
+                state.finished_at = finished_at
+            if duration_ms:
+                state.duration_ms = duration_ms
+        session.add(state)
         session.commit()
 
 
@@ -100,7 +182,8 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             return
 
     _update_workflow_status(workflow_id, "running")
-    _update_run(run_id, status="running", message="开始执行工作流", logs=["[INFO] 调度成功，开始执行"])
+    _update_run(run_id, status="running", message="开始执行工作流")
+    _append_run_log(run_id, workflow_id, level="INFO", message="调度成功，准备执行 DAG")
 
     with Session(engine) as session:
         workflow = session.get(Workflow, workflow_id)
@@ -109,34 +192,59 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             order = _build_order(workflow)
             labels = _node_label_map(workflow)
             ctx = RunContext()
-            logs = [f"[INFO] 执行顺序: {order}"]
+            _append_run_log(run_id, workflow_id, level="INFO", message=f"执行顺序: {order}")
 
             for node_id in order:
-                label = labels.get(node_id, node_id)
-                logs.append(f"[INFO] 执行节点: {label}({node_id})")
-                _update_run(run_id, status="running", message=f"执行中: {label}", logs=logs[-20:])
-                execute_node_by_label(label, ctx)
-                logs.extend(ctx.logs[-2:])
+                node_name = labels.get(node_id, node_id)
+                node_started = datetime.utcnow()
+                _upsert_node_state(
+                    run_id,
+                    workflow_id,
+                    node_id,
+                    node_name,
+                    status="running",
+                    message="节点执行中",
+                    started_at=node_started,
+                )
+                _update_run(run_id, status="running", message=f"执行中: {node_name}")
+                _append_run_log(run_id, workflow_id, level="INFO", message=f"开始执行节点 {node_name}", node_id=node_id, node_name=node_name)
+
+                start_node_ts = time.time()
+                execute_node_by_label(node_name, ctx)
+                node_cost_ms = int((time.time() - start_node_ts) * 1000)
+
+                _upsert_node_state(
+                    run_id,
+                    workflow_id,
+                    node_id,
+                    node_name,
+                    status="success",
+                    message="节点执行成功",
+                    finished_at=datetime.utcnow(),
+                    duration_ms=node_cost_ms,
+                )
+                _append_run_log(
+                    run_id,
+                    workflow_id,
+                    level="INFO",
+                    message=f"节点完成 {node_name}，耗时 {node_cost_ms}ms",
+                    node_id=node_id,
+                    node_name=node_name,
+                )
 
             if ctx.report is None:
-                from .node_handlers import handle_backtest
-
                 handle_backtest(ctx)
-                logs.extend(ctx.logs[-2:])
+                _append_run_log(run_id, workflow_id, level="INFO", message="执行后置回测并生成报告")
 
             _save_report(workflow_id, workflow.name, ctx.report or {})
             duration = _fmt_duration(started, time.time())
-            _update_run(run_id, status="success", message="执行完成，报告已生成", logs=logs[-50:], duration=duration)
+            _update_run(run_id, status="success", message="执行完成，报告已生成", duration=duration)
+            _append_run_log(run_id, workflow_id, level="INFO", message="运行成功结束")
             _update_workflow_status(workflow_id, "published")
         except Exception as exc:
             duration = _fmt_duration(started, time.time())
-            _update_run(
-                run_id,
-                status="failed",
-                message=f"执行失败: {exc}",
-                logs=[f"[ERROR] {exc}"],
-                duration=duration,
-            )
+            _update_run(run_id, status="failed", message=f"执行失败: {exc}", duration=duration)
+            _append_run_log(run_id, workflow_id, level="ERROR", message=f"运行失败: {exc}")
             _update_workflow_status(workflow_id, "draft")
 
 
@@ -152,6 +260,7 @@ def start_run(workflow_id: str) -> Run:
             status="queued",
             duration="00m 00s",
             created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
             message="任务已进入队列，等待调度",
             logs=["[INFO] run 已创建"],
         )
@@ -159,9 +268,24 @@ def start_run(workflow_id: str) -> Run:
         session.commit()
         session.refresh(run)
 
+    _append_run_log(run.id, workflow_id, level="INFO", message="run 记录已创建")
     executor.submit(execute_run, run.id, workflow_id)
     return run
 
 
 def list_runs(session: Session) -> list[Run]:
     return list(session.exec(select(Run).order_by(Run.created_at.desc())))
+
+
+def list_run_logs(session: Session, run_id: str) -> list[RunLog]:
+    return list(session.exec(select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.created_at.asc())))
+
+
+def list_node_states(session: Session, run_id: str) -> list[WorkflowNodeState]:
+    return list(
+        session.exec(
+            select(WorkflowNodeState)
+            .where(WorkflowNodeState.run_id == run_id)
+            .order_by(WorkflowNodeState.started_at.asc())
+        )
+    )

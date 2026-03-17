@@ -56,6 +56,8 @@ class TemplateRead(BaseModel):
     tags: list[str]
     updated_at: datetime
     category: str
+    official: bool
+    template_group: str
     graph: WorkflowGraph
 
 
@@ -68,6 +70,30 @@ class RunRead(BaseModel):
     created_at: datetime
     message: str
     logs: list[str]
+
+
+class RunLogRead(BaseModel):
+    id: str
+    run_id: str
+    workflow_id: str
+    level: str
+    node_id: str | None = None
+    node_name: str | None = None
+    message: str
+    created_at: datetime
+
+
+class NodeStateRead(BaseModel):
+    id: str
+    run_id: str
+    workflow_id: str
+    node_id: str
+    node_name: str
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int
+    message: str
 
 
 class ReportRead(BaseModel):
@@ -87,3 +113,5 @@ class NodeDefinitionRead(BaseModel):
     inputs: list[str]
     outputs: list[str]
     params: list[dict[str, Any]]
+    doc: dict[str, Any] = Field(default_factory=dict)
+    runtime: dict[str, Any] = Field(default_factory=dict)

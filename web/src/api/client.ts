@@ -1,6 +1,8 @@
 import type {
+  NodeState,
   NodeDefinition,
   ReportSnapshot,
+  RunLog,
   RunRecord,
   Template,
   Workflow,
@@ -29,6 +31,8 @@ interface ApiTemplate {
   tags: string[]
   updated_at: string
   category: string
+  official?: boolean
+  template_group?: string
   graph: WorkflowGraph
 }
 
@@ -41,6 +45,30 @@ interface ApiRun {
   created_at: string
   message: string
   logs: string[]
+}
+
+interface ApiRunLog {
+  id: string
+  run_id: string
+  workflow_id: string
+  level: string
+  node_id?: string | null
+  node_name?: string | null
+  message: string
+  created_at: string
+}
+
+interface ApiNodeState {
+  id: string
+  run_id: string
+  workflow_id: string
+  node_id: string
+  node_name: string
+  status: NodeState['status']
+  started_at?: string | null
+  finished_at?: string | null
+  duration_ms: number
+  message: string
 }
 
 interface ApiReport {
@@ -75,6 +103,8 @@ function toTemplate(item: ApiTemplate): Template {
     tags: item.tags,
     updatedAt: item.updated_at,
     category: item.category,
+    official: item.official ?? true,
+    templateGroup: item.template_group ?? '官方模板',
     graph: item.graph ?? { nodes: [], edges: [] },
   }
 }
@@ -89,6 +119,34 @@ function toRun(item: ApiRun): RunRecord {
     createdAt: item.created_at,
     message: item.message,
     logs: item.logs,
+  }
+}
+
+function toRunLog(item: ApiRunLog): RunLog {
+  return {
+    id: item.id,
+    runId: item.run_id,
+    workflowId: item.workflow_id,
+    level: item.level,
+    nodeId: item.node_id ?? undefined,
+    nodeName: item.node_name ?? undefined,
+    message: item.message,
+    createdAt: item.created_at,
+  }
+}
+
+function toNodeState(item: ApiNodeState): NodeState {
+  return {
+    id: item.id,
+    runId: item.run_id,
+    workflowId: item.workflow_id,
+    nodeId: item.node_id,
+    nodeName: item.node_name,
+    status: item.status,
+    startedAt: item.started_at ?? undefined,
+    finishedAt: item.finished_at ?? undefined,
+    durationMs: item.duration_ms,
+    message: item.message,
   }
 }
 
@@ -124,8 +182,12 @@ export async function fetchWorkflows() {
   return data.map(toWorkflow)
 }
 
-export async function fetchTemplates() {
-  const data = await request<ApiTemplate[]>('/templates')
+export async function fetchTemplates(params?: { official?: boolean; keyword?: string }) {
+  const query = new URLSearchParams()
+  if (typeof params?.official === 'boolean') query.set('official', String(params.official))
+  if (params?.keyword) query.set('keyword', params.keyword)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiTemplate[]>(`/templates${suffix}`)
   return data.map(toTemplate)
 }
 
@@ -135,7 +197,11 @@ export async function fetchRuns() {
 }
 
 export async function fetchNodeLibrary() {
-  return request<NodeDefinition[]>('/node-library')
+  return request<NodeDefinition[]>('/node-specs')
+}
+
+export async function fetchNodeSpec(nodeId: string) {
+  return request<NodeDefinition>(`/node-specs/${nodeId}`)
 }
 
 export async function createWorkflow(payload: {
@@ -194,10 +260,20 @@ export async function fetchReport(workflowId: string) {
   return data ? toReport(data) : undefined
 }
 
+export async function fetchRunLogs(runId: string) {
+  const data = await request<ApiRunLog[]>(`/runs/${runId}/logs`)
+  return data.map(toRunLog)
+}
+
+export async function fetchRunNodeStates(runId: string) {
+  const data = await request<ApiNodeState[]>(`/runs/${runId}/node-states`)
+  return data.map(toNodeState)
+}
+
 export async function fetchBootstrap() {
   const [workflows, templates, runs, nodeLibrary] = await Promise.all([
     fetchWorkflows(),
-    fetchTemplates(),
+    fetchTemplates({ official: true }),
     fetchRuns(),
     fetchNodeLibrary(),
   ])

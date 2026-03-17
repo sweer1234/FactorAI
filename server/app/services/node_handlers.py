@@ -150,16 +150,18 @@ def execute_node_by_label(label: str, ctx: RunContext) -> None:
         handle_python_node(ctx)
     elif "行情" in label:
         handle_market_data(ctx)
+    elif "回测" in label or "分析结果" in label or "因子分析" in label:
+        handle_backtest(ctx)
+    elif "pca" in name or "spearman" in name:
+        handle_factor_pca(ctx)
+    elif "公式" in label:
+        handle_feature_engineering(ctx)
     elif "特征" in label:
         handle_feature_engineering(ctx)
     elif "xgboost" in name or "lightgbm" in name or "模型" in label or "超参数" in label:
         handle_model(ctx)
-    elif "pca" in name:
-        handle_factor_pca(ctx)
     elif "因子" in label:
         handle_factor_custom(ctx)
-    elif "回测" in label or "分析" in label:
-        handle_backtest(ctx)
     else:
         # 未识别节点默认透传为特征处理，确保流程可运行
         handle_feature_engineering(ctx)

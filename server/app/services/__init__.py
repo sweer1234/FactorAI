@@ -3,4 +3,5 @@ __all__ = [
     "node_handlers",
     "sandbox",
     "backtest",
+    "catalog",
 ]

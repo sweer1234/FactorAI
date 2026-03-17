@@ -3,21 +3,23 @@ from __future__ import annotations
 from datetime import datetime
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from .db import get_session
-from .models import Report, Run, Template, Workflow
+from .models import NodeSpec, Report, Run, RunLog, Template, Workflow, WorkflowNodeState
 from .schemas import (
     GraphUpdate,
     NodeDefinitionRead,
+    NodeStateRead,
     ReportRead,
+    RunLogRead,
     RunRead,
     TemplateRead,
     WorkflowCreate,
     WorkflowRead,
 )
-from .services.execution import list_runs, start_run
+from .services.execution import list_node_states, list_run_logs, list_runs, start_run
 from .services.node_library import NODE_LIBRARY
 
 
@@ -47,6 +49,8 @@ def _template_to_read(row: Template) -> TemplateRead:
         tags=row.tags,
         updated_at=row.updated_at,
         category=row.category,
+        official=row.official,
+        template_group=row.template_group,
         graph=row.graph or {"nodes": [], "edges": []},
     )
 
@@ -64,14 +68,61 @@ def _run_to_read(row: Run) -> RunRead:
     )
 
 
+def _nodespec_to_read(row: NodeSpec | dict) -> NodeDefinitionRead:
+    if isinstance(row, dict):
+        return NodeDefinitionRead(**row)
+    return NodeDefinitionRead(
+        id=row.id,
+        name=row.name,
+        category=row.category,
+        description=row.description,
+        inputs=row.inputs,
+        outputs=row.outputs,
+        params=row.params,
+        doc=row.doc,
+        runtime=row.runtime,
+    )
+
+
 @router.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
 @router.get("/node-library", response_model=list[NodeDefinitionRead])
-def get_node_library():
-    return NODE_LIBRARY
+def get_node_library(session: Session = Depends(get_session)):
+    rows = list(session.exec(select(NodeSpec).order_by(NodeSpec.category.asc(), NodeSpec.name.asc())))
+    if not rows:
+        return [_nodespec_to_read(item) for item in NODE_LIBRARY]
+    return [_nodespec_to_read(item) for item in rows]
+
+
+@router.get("/node-specs", response_model=list[NodeDefinitionRead])
+def get_node_specs(
+    session: Session = Depends(get_session),
+    category: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+):
+    query = select(NodeSpec).order_by(NodeSpec.category.asc(), NodeSpec.name.asc())
+    if category:
+        query = query.where(NodeSpec.category == category)
+    rows = list(session.exec(query))
+    if keyword:
+        key = keyword.lower()
+        rows = [row for row in rows if key in row.name.lower() or key in row.description.lower()]
+    return [_nodespec_to_read(item) for item in rows]
+
+
+@router.get("/node-specs/{node_id}", response_model=NodeDefinitionRead)
+def get_node_spec(node_id: str, session: Session = Depends(get_session)):
+    row = session.get(NodeSpec, node_id)
+    if not row:
+        # fallback for compatibility
+        fallback = next((item for item in NODE_LIBRARY if item["id"] == node_id), None)
+        if fallback:
+            return _nodespec_to_read(fallback)
+        raise HTTPException(status_code=404, detail="node spec not found")
+    return _nodespec_to_read(row)
 
 
 @router.get("/workflows", response_model=list[WorkflowRead])
@@ -143,9 +194,27 @@ def run_workflow(workflow_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/templates", response_model=list[TemplateRead])
-def get_templates(session: Session = Depends(get_session)):
-    rows = list(session.exec(select(Template).order_by(Template.updated_at.desc())))
+def get_templates(
+    session: Session = Depends(get_session),
+    official: bool | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+):
+    query = select(Template).order_by(Template.updated_at.desc())
+    if official is not None:
+        query = query.where(Template.official == official)
+    rows = list(session.exec(query))
+    if keyword:
+        key = keyword.lower()
+        rows = [row for row in rows if key in row.name.lower() or key in row.description.lower()]
     return [_template_to_read(row) for row in rows]
+
+
+@router.get("/templates/{template_id}", response_model=TemplateRead)
+def get_template(template_id: str, session: Session = Depends(get_session)):
+    row = session.get(Template, template_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="template not found")
+    return _template_to_read(row)
 
 
 @router.post("/templates/{template_id}/clone", response_model=WorkflowRead)
@@ -182,6 +251,50 @@ def get_run(run_id: str, session: Session = Depends(get_session)):
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     return _run_to_read(row)
+
+
+@router.get("/runs/{run_id}/logs", response_model=list[RunLogRead])
+def get_run_logs(run_id: str, session: Session = Depends(get_session)):
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = list_run_logs(session, run_id)
+    return [
+        RunLogRead(
+            id=row.id,
+            run_id=row.run_id,
+            workflow_id=row.workflow_id,
+            level=row.level,
+            node_id=row.node_id,
+            node_name=row.node_name,
+            message=row.message,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/runs/{run_id}/node-states", response_model=list[NodeStateRead])
+def get_run_node_states(run_id: str, session: Session = Depends(get_session)):
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = list_node_states(session, run_id)
+    return [
+        NodeStateRead(
+            id=row.id,
+            run_id=row.run_id,
+            workflow_id=row.workflow_id,
+            node_id=row.node_id,
+            node_name=row.node_name,
+            status=row.status,
+            started_at=row.started_at,
+            finished_at=row.finished_at,
+            duration_ms=row.duration_ms,
+            message=row.message,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/reports/{workflow_id}", response_model=ReportRead | None)

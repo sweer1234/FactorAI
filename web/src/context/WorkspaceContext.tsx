@@ -1,11 +1,14 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   cloneTemplate as apiCloneTemplate,
   createWorkflow as apiCreateWorkflow,
   fetchBootstrap,
   fetchReport,
+  fetchRunLogs,
+  fetchRunNodeStates,
   fetchRuns,
+  fetchTemplates,
   fetchWorkflows,
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
@@ -17,7 +20,16 @@ import {
   templates as fallbackTemplates,
   workflowList,
 } from '../data/mock'
-import type { NodeDefinition, ReportSnapshot, RunRecord, Template, Workflow, WorkflowGraph } from '../types'
+import type {
+  NodeDefinition,
+  NodeState,
+  ReportSnapshot,
+  RunLog,
+  RunRecord,
+  Template,
+  Workflow,
+  WorkflowGraph,
+} from '../types'
 
 export interface WorkspaceStore {
   workflows: Workflow[]
@@ -25,9 +37,14 @@ export interface WorkspaceStore {
   runs: RunRecord[]
   nodeLibrary: NodeDefinition[]
   reports: Record<string, ReportSnapshot>
+  runLogsByRunId: Record<string, RunLog[]>
+  nodeStatesByRunId: Record<string, NodeState[]>
   loading: boolean
   backendOnline: boolean
   getGraphByWorkflowId: (workflowId: string) => WorkflowGraph | undefined
+  getLatestRunByWorkflowId: (workflowId: string) => RunRecord | undefined
+  getRunLogs: (runId?: string) => RunLog[]
+  getNodeStates: (runId?: string) => NodeState[]
   createWorkflow: (payload: {
     name: string
     category: string
@@ -40,6 +57,7 @@ export interface WorkspaceStore {
   saveWorkflowDraft: (workflowId: string) => Promise<void>
   runWorkflow: (workflowId: string) => Promise<void>
   getReportByWorkflowId: (workflowId: string) => ReportSnapshot | undefined
+  refreshExecutionByWorkflowId: (workflowId: string) => Promise<void>
   notice: string | null
 }
 
@@ -55,14 +73,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<RunRecord[]>(fallbackRuns)
   const [nodeLibrary, setNodeLibrary] = useState<NodeDefinition[]>(fallbackNodeLibrary)
   const [reports, setReports] = useState<Record<string, ReportSnapshot>>({})
+  const [runLogsByRunId, setRunLogsByRunId] = useState<Record<string, RunLog[]>>({})
+  const [nodeStatesByRunId, setNodeStatesByRunId] = useState<Record<string, NodeState[]>>({})
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [backendOnline, setBackendOnline] = useState(false)
 
   const updateNotice = (text: string) => {
     setNotice(text)
-    window.setTimeout(() => setNotice(null), 2400)
+    window.setTimeout(() => setNotice(null), 2600)
   }
+
+  const getLatestRunByWorkflowId = (workflowId: string) => runs.find((item) => item.workflowId === workflowId)
 
   const refreshWorkflows = async () => {
     const list = await fetchWorkflows()
@@ -72,12 +94,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const refreshRuns = async () => {
     const list = await fetchRuns()
     setRuns(list)
+    return list
+  }
+
+  const refreshTemplates = async () => {
+    const list = await fetchTemplates({ official: true })
+    setTemplates(list)
   }
 
   const refreshReport = async (workflowId: string) => {
     const report = await fetchReport(workflowId)
     if (!report) return
     setReports((prev) => ({ ...prev, [workflowId]: report }))
+  }
+
+  const refreshRunDetails = async (runId: string) => {
+    const [logs, nodeStates] = await Promise.all([fetchRunLogs(runId), fetchRunNodeStates(runId)])
+    setRunLogsByRunId((prev) => ({ ...prev, [runId]: logs }))
+    setNodeStatesByRunId((prev) => ({ ...prev, [runId]: nodeStates }))
+  }
+
+  const refreshExecutionByWorkflowId = async (workflowId: string) => {
+    const latestRuns = await refreshRuns()
+    const latest = latestRuns.find((item) => item.workflowId === workflowId)
+    if (latest) {
+      await refreshRunDetails(latest.id)
+    }
   }
 
   useEffect(() => {
@@ -178,20 +220,26 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       updateNotice('本地模式：已模拟运行')
       return
     }
-    await apiRunWorkflow(workflowId)
+    const run = await apiRunWorkflow(workflowId)
+    setRuns((prev) => [run, ...prev])
     updateNotice(`已启动运行：${workflow.name}`)
-    await refreshRuns()
-    await refreshWorkflows()
 
     let round = 0
     const poll = async () => {
       round += 1
-      await Promise.all([refreshRuns(), refreshWorkflows(), refreshReport(workflowId)])
-      if (round < 12) {
+      const [latestRuns] = await Promise.all([
+        refreshRuns(),
+        refreshWorkflows(),
+        refreshTemplates(),
+        refreshReport(workflowId),
+      ])
+      const latest = latestRuns.find((item) => item.workflowId === workflowId) ?? run
+      await refreshRunDetails(latest.id)
+      if (round < 20 && latest.status !== 'success' && latest.status !== 'failed') {
         window.setTimeout(poll, 1200)
       }
     }
-    window.setTimeout(poll, 1000)
+    window.setTimeout(poll, 900)
   }
 
   const getGraphByWorkflowId = (workflowId: string) =>
@@ -199,23 +247,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const getReportByWorkflowId = (workflowId: string) => reports[workflowId]
 
-  const value: WorkspaceStore = {
-    workflows,
-    templates,
-    runs,
-    nodeLibrary,
-    reports,
-    loading,
-    backendOnline,
-    getGraphByWorkflowId,
-    createWorkflow,
-    cloneTemplate,
-    saveWorkflowGraph,
-    saveWorkflowDraft,
-    runWorkflow,
-    getReportByWorkflowId,
-    notice,
+  const getRunLogs = (runId?: string) => {
+    if (!runId) return []
+    return runLogsByRunId[runId] ?? []
   }
+
+  const getNodeStates = (runId?: string) => {
+    if (!runId) return []
+    return nodeStatesByRunId[runId] ?? []
+  }
+
+  const value = useMemo<WorkspaceStore>(
+    () => ({
+      workflows,
+      templates,
+      runs,
+      nodeLibrary,
+      reports,
+      runLogsByRunId,
+      nodeStatesByRunId,
+      loading,
+      backendOnline,
+      getGraphByWorkflowId,
+      getLatestRunByWorkflowId,
+      getRunLogs,
+      getNodeStates,
+      createWorkflow,
+      cloneTemplate,
+      saveWorkflowGraph,
+      saveWorkflowDraft,
+      runWorkflow,
+      getReportByWorkflowId,
+      refreshExecutionByWorkflowId,
+      notice,
+    }),
+    [workflows, templates, runs, nodeLibrary, reports, runLogsByRunId, nodeStatesByRunId, loading, backendOnline, notice],
+  )
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }

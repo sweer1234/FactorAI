@@ -94,6 +94,8 @@ export const templates: Template[] = [
     tags: ['官方模板', '趋势'],
     updatedAt: '2026-03-10 09:30:14',
     category: '趋势类',
+    official: true,
+    templateGroup: '官方模板',
     graph: {
       nodes: cloneGraphNodes(baseNodes),
       edges: cloneGraphEdges(baseEdges),
@@ -106,6 +108,8 @@ export const templates: Template[] = [
     tags: ['官方模板', '状态识别'],
     updatedAt: '2026-03-08 17:42:22',
     category: '状态识别',
+    official: true,
+    templateGroup: '官方模板',
     graph: {
       nodes: cloneGraphNodes(baseNodes).map((item) =>
         item.label === 'XGBoost模型' ? { ...item, label: 'LightGBM模型' } : item,
@@ -120,6 +124,8 @@ export const templates: Template[] = [
     tags: ['因子构建', 'PCA'],
     updatedAt: '2026-03-05 11:06:05',
     category: '复合因子',
+    official: true,
+    templateGroup: '官方模板',
     graph: {
       nodes: [
         { id: 'p1', label: '特征工程构建', position: { x: 60, y: 120 }, styleVariant: 'feature' },

@@ -21,6 +21,8 @@ export interface Template {
   tags: string[]
   updatedAt: string
   category: string
+  official?: boolean
+  templateGroup?: string
   graph: WorkflowGraph
 }
 
@@ -38,6 +40,16 @@ export interface NodeDefinition {
     defaultValue?: string | number | boolean
     options?: string[]
   }>
+  doc?: {
+    intro?: string
+    workflow_example?: string
+    notes?: string[]
+  }
+  runtime?: {
+    engine?: string
+    timeout_sec?: number
+    memory_mb?: number
+  }
 }
 
 export interface GraphNode {
@@ -71,6 +83,30 @@ export interface RunRecord {
   createdAt: string
   message: string
   logs?: string[]
+}
+
+export interface RunLog {
+  id: string
+  runId: string
+  workflowId: string
+  level: string
+  nodeId?: string
+  nodeName?: string
+  message: string
+  createdAt: string
+}
+
+export interface NodeState {
+  id: string
+  runId: string
+  workflowId: string
+  nodeId: string
+  nodeName: string
+  status: 'queued' | 'running' | 'success' | 'failed'
+  startedAt?: string
+  finishedAt?: string
+  durationMs: number
+  message: string
 }
 
 export interface ReportMetric {

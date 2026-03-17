@@ -30,7 +30,32 @@ class Template(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     updated_at: datetime = Field(default_factory=now_utc)
     category: str
+    official: bool = Field(default=True)
+    template_group: str = Field(default="官方模板")
     graph: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class TemplateVersion(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    template_id: str = Field(index=True)
+    version: str
+    changelog: str = Field(default="")
+    graph: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class NodeSpec(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    name: str
+    category: str = Field(index=True)
+    description: str
+    inputs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    outputs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    params: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    doc: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    runtime: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    updated_at: datetime = Field(default_factory=now_utc)
 
 
 class Run(SQLModel, table=True):
@@ -42,6 +67,31 @@ class Run(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now_utc)
     message: str = Field(default="")
     logs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
+class RunLog(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    run_id: str = Field(index=True)
+    workflow_id: str = Field(index=True)
+    level: str = Field(default="INFO")
+    node_id: str | None = None
+    node_name: str | None = None
+    message: str
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class WorkflowNodeState(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    run_id: str = Field(index=True)
+    workflow_id: str = Field(index=True)
+    node_id: str = Field(index=True)
+    node_name: str
+    status: str = Field(default="queued")
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int = Field(default=0)
+    message: str = Field(default="")
 
 
 class Report(SQLModel, table=True):
