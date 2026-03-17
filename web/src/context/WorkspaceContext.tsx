@@ -3,6 +3,7 @@ import { createContext, useEffect, useState, type ReactNode } from 'react'
 import {
   cloneTemplate as apiCloneTemplate,
   createWorkflow as apiCreateWorkflow,
+  fetchArtifacts,
   fetchBootstrap,
   fetchReport,
   fetchRunLogs,
@@ -13,6 +14,7 @@ import {
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
   saveWorkflowGraph as apiSaveWorkflowGraph,
+  uploadArtifact,
 } from '../api/client'
 import {
   nodeLibrary as fallbackNodeLibrary,
@@ -21,6 +23,7 @@ import {
   workflowList,
 } from '../data/mock'
 import type {
+  Artifact,
   NodeDefinition,
   NodeState,
   ReportSnapshot,
@@ -36,12 +39,14 @@ export interface WorkspaceStore {
   templates: Template[]
   runs: RunRecord[]
   nodeLibrary: NodeDefinition[]
+  artifactsByWorkflowId: Record<string, Artifact[]>
   reports: Record<string, ReportSnapshot>
   runLogsByRunId: Record<string, RunLog[]>
   nodeStatesByRunId: Record<string, NodeState[]>
   loading: boolean
   backendOnline: boolean
   getGraphByWorkflowId: (workflowId: string) => WorkflowGraph | undefined
+  getArtifactsByWorkflowId: (workflowId: string) => Artifact[]
   getLatestRunByWorkflowId: (workflowId: string) => RunRecord | undefined
   getRunLogs: (runId?: string) => RunLog[]
   getNodeStates: (runId?: string) => NodeState[]
@@ -58,6 +63,8 @@ export interface WorkspaceStore {
   runWorkflow: (workflowId: string) => Promise<void>
   getReportByWorkflowId: (workflowId: string) => ReportSnapshot | undefined
   refreshExecutionByWorkflowId: (workflowId: string) => Promise<void>
+  refreshArtifactsByWorkflowId: (workflowId: string) => Promise<void>
+  uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<void>
   notice: string | null
 }
 
@@ -72,6 +79,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [templates, setTemplates] = useState<Template[]>(fallbackTemplates)
   const [runs, setRuns] = useState<RunRecord[]>(fallbackRuns)
   const [nodeLibrary, setNodeLibrary] = useState<NodeDefinition[]>(fallbackNodeLibrary)
+  const [artifactsByWorkflowId, setArtifactsByWorkflowId] = useState<Record<string, Artifact[]>>({})
   const [reports, setReports] = useState<Record<string, ReportSnapshot>>({})
   const [runLogsByRunId, setRunLogsByRunId] = useState<Record<string, RunLog[]>>({})
   const [nodeStatesByRunId, setNodeStatesByRunId] = useState<Record<string, NodeState[]>>({})
@@ -114,12 +122,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setNodeStatesByRunId((prev) => ({ ...prev, [runId]: nodeStates }))
   }
 
+  const refreshArtifactsByWorkflowId = async (workflowId: string) => {
+    if (!backendOnline) return
+    const artifacts = await fetchArtifacts({ workflowId })
+    setArtifactsByWorkflowId((prev) => ({ ...prev, [workflowId]: artifacts }))
+  }
+
   const refreshExecutionByWorkflowId = async (workflowId: string) => {
     const latestRuns = await refreshRuns()
     const latest = latestRuns.find((item) => item.workflowId === workflowId)
     if (latest) {
       await refreshRunDetails(latest.id)
     }
+    await refreshArtifactsByWorkflowId(workflowId)
   }
 
   useEffect(() => {
@@ -232,6 +247,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         refreshWorkflows(),
         refreshTemplates(),
         refreshReport(workflowId),
+        refreshArtifactsByWorkflowId(workflowId),
       ])
       const latest = latestRuns.find((item) => item.workflowId === workflowId) ?? run
       await refreshRunDetails(latest.id)
@@ -244,6 +260,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const getGraphByWorkflowId = (workflowId: string) =>
     workflows.find((item) => item.id === workflowId)?.graph ?? { nodes: [], edges: [] }
+  const getArtifactsByWorkflowId = (workflowId: string) => artifactsByWorkflowId[workflowId] ?? []
 
   const getReportByWorkflowId = (workflowId: string) => reports[workflowId]
 
@@ -257,17 +274,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return nodeStatesByRunId[runId] ?? []
   }
 
+  const uploadArtifactForWorkflow = async (workflowId: string, file: File, kind = 'generic') => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法上传')
+      return
+    }
+    await uploadArtifact({ workflowId, file, kind })
+    await refreshArtifactsByWorkflowId(workflowId)
+    updateNotice(`上传完成：${file.name}`)
+  }
+
   const value: WorkspaceStore = {
     workflows,
     templates,
     runs,
     nodeLibrary,
+    artifactsByWorkflowId,
     reports,
     runLogsByRunId,
     nodeStatesByRunId,
     loading,
     backendOnline,
     getGraphByWorkflowId,
+    getArtifactsByWorkflowId,
     getLatestRunByWorkflowId,
     getRunLogs,
     getNodeStates,
@@ -278,6 +307,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     runWorkflow,
     getReportByWorkflowId,
     refreshExecutionByWorkflowId,
+    refreshArtifactsByWorkflowId,
+    uploadArtifactForWorkflow,
     notice,
   }
 

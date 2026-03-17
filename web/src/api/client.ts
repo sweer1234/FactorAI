@@ -1,4 +1,5 @@
 import type {
+  Artifact,
   NodeState,
   NodeDefinition,
   ReportSnapshot,
@@ -80,6 +81,15 @@ interface ApiReport {
   updated_at: string
 }
 
+interface ApiArtifact {
+  id: string
+  workflow_id?: string | null
+  kind: string
+  file_name: string
+  file_size: number
+  created_at: string
+}
+
 function toWorkflow(item: ApiWorkflow): Workflow {
   return {
     id: item.id,
@@ -147,6 +157,17 @@ function toNodeState(item: ApiNodeState): NodeState {
     finishedAt: item.finished_at ?? undefined,
     durationMs: item.duration_ms,
     message: item.message,
+  }
+}
+
+function toArtifact(item: ApiArtifact): Artifact {
+  return {
+    id: item.id,
+    workflowId: item.workflow_id ?? undefined,
+    kind: item.kind,
+    fileName: item.file_name,
+    fileSize: item.file_size,
+    createdAt: item.created_at,
   }
 }
 
@@ -268,6 +289,37 @@ export async function fetchRunLogs(runId: string) {
 export async function fetchRunNodeStates(runId: string) {
   const data = await request<ApiNodeState[]>(`/runs/${runId}/node-states`)
   return data.map(toNodeState)
+}
+
+export async function fetchArtifacts(params?: { workflowId?: string; kind?: string }) {
+  const query = new URLSearchParams()
+  if (params?.workflowId) query.set('workflow_id', params.workflowId)
+  if (params?.kind) query.set('kind', params.kind)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiArtifact[]>(`/artifacts${suffix}`)
+  return data.map(toArtifact)
+}
+
+export async function uploadArtifact(payload: {
+  file: File
+  kind?: string
+  workflowId?: string
+}) {
+  const form = new FormData()
+  form.append('file', payload.file)
+  if (payload.kind) form.append('kind', payload.kind)
+  if (payload.workflowId) form.append('workflow_id', payload.workflowId)
+
+  const response = await fetch(`${API_BASE}/artifacts/upload`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`API ${response.status}: ${text}`)
+  }
+  const data = (await response.json()) as ApiArtifact
+  return toArtifact(data)
 }
 
 export async function fetchBootstrap() {

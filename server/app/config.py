@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     python_node_timeout: int = 6
     python_node_memory_mb: int = 256
+    artifact_dir: str = "server_artifacts"
 
     model_config = SettingsConfigDict(env_prefix="FACTORAI_", extra="ignore")
 

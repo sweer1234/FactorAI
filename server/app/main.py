@@ -13,6 +13,7 @@ from .seed import seed_if_empty
 def create_app() -> FastAPI:
     sqlite_file = Path(settings.sqlite_path)
     sqlite_file.parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.artifact_dir).mkdir(parents=True, exist_ok=True)
     init_db()
     with Session(engine) as session:
         seed_if_empty(session)

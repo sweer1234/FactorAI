@@ -9,6 +9,8 @@ class GraphNode(BaseModel):
     label: str
     position: dict[str, float]
     styleVariant: str | None = None
+    nodeSpecId: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphEdge(BaseModel):
@@ -115,3 +117,12 @@ class NodeDefinitionRead(BaseModel):
     params: list[dict[str, Any]]
     doc: dict[str, Any] = Field(default_factory=dict)
     runtime: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactRead(BaseModel):
+    id: str
+    workflow_id: str | None = None
+    kind: str
+    file_name: str
+    file_size: int
+    created_at: datetime

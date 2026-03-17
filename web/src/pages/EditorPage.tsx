@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import {
   Background,
   Controls,
@@ -13,9 +13,17 @@ import {
 } from '@xyflow/react'
 import { Link, useParams } from 'react-router-dom'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { GraphNode, NodeState } from '../types'
+import type { GraphNode, NodeDefinition, NodeState } from '../types'
 
 type EditorTab = 'library' | 'logs' | 'current'
+type FlowNodeData = {
+  label: string
+  styleVariant?: GraphNode['styleVariant']
+  nodeSpecId?: string
+  params?: Record<string, string | number | boolean>
+  inputs?: string[]
+  outputs?: string[]
+}
 
 function styleByVariant(variant?: GraphNode['styleVariant']) {
   if (variant === 'data') return { background: '#102d3b', color: '#d2eeff', border: '1px solid #1a6b8f' }
@@ -28,11 +36,19 @@ function styleByVariant(variant?: GraphNode['styleVariant']) {
   return { background: '#1f2332', color: '#e7eaff', border: '1px solid #5661c6' }
 }
 
-function toReactNodes(nodes: GraphNode[]): Node[] {
+function toReactNodes(nodes: GraphNode[], nodeLibrary: NodeDefinition[]): Node<FlowNodeData>[] {
+  const specMap = new Map(nodeLibrary.map((item) => [item.id, item]))
   return nodes.map((item) => ({
     id: item.id,
     position: { ...item.position },
-    data: { label: item.label, styleVariant: item.styleVariant },
+    data: {
+      label: item.label,
+      styleVariant: item.styleVariant,
+      nodeSpecId: item.nodeSpecId,
+      params: item.params ?? {},
+      inputs: specMap.get(item.nodeSpecId ?? '')?.inputs ?? [],
+      outputs: specMap.get(item.nodeSpecId ?? '')?.outputs ?? [],
+    },
     style: {
       ...styleByVariant(item.styleVariant),
       borderRadius: 10,
@@ -41,12 +57,14 @@ function toReactNodes(nodes: GraphNode[]): Node[] {
   }))
 }
 
-function toGraphNodes(nodes: Node[]): GraphNode[] {
+function toGraphNodes(nodes: Node<FlowNodeData>[]): GraphNode[] {
   return nodes.map((item) => ({
     id: item.id,
     label: String(item.data?.label ?? item.id),
     position: { x: item.position.x, y: item.position.y },
     styleVariant: (item.data?.styleVariant as GraphNode['styleVariant']) ?? 'default',
+    nodeSpecId: item.data?.nodeSpecId,
+    params: item.data?.params ?? {},
   }))
 }
 
@@ -70,21 +88,25 @@ export function EditorPage() {
     getRunLogs,
     getNodeStates,
     refreshExecutionByWorkflowId,
+    getArtifactsByWorkflowId,
+    uploadArtifactForWorkflow,
   } = useWorkspace()
 
   const [activeTab, setActiveTab] = useState<EditorTab>('library')
   const [keyword, setKeyword] = useState('')
   const workflow = workflows.find((item) => item.id === workflowId)
   const graph = workflow ? getGraphByWorkflowId(workflow.id) : undefined
-  const seedNodes = useMemo(() => toReactNodes(graph?.nodes ?? []), [graph?.nodes])
+  const seedNodes = useMemo(() => toReactNodes(graph?.nodes ?? [], nodeLibrary), [graph?.nodes, nodeLibrary])
   const seedEdges = useMemo(() => (graph?.edges ?? []).map((edge) => ({ ...edge })), [graph?.edges])
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(seedNodes)
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(seedNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(seedEdges)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const nodeSeqRef = useRef(2000)
   const saveDebounceRef = useRef<number | null>(null)
   const refreshExecutionRef = useRef(refreshExecutionByWorkflowId)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [editorNotice, setEditorNotice] = useState<string | null>(null)
   const activeWorkflowId = workflow?.id
 
   useEffect(() => {
@@ -144,13 +166,17 @@ export function EditorPage() {
   }, [nodeLibrary, keyword])
 
   const selectedDefinition = useMemo(() => {
-    const nodeName = nodes.find((item) => item.id === currentSelectedNodeId)?.data?.label
+    const node = nodes.find((item) => item.id === currentSelectedNodeId)
+    const byId = nodeLibrary.find((item) => item.id === node?.data?.nodeSpecId)
+    if (byId) return byId
+    const nodeName = node?.data?.label
     return nodeLibrary.find((item) => item.name === nodeName) ?? nodeLibrary[0]
   }, [nodes, currentSelectedNodeId, nodeLibrary])
 
   const latestRun = workflow ? getLatestRunByWorkflowId(workflow.id) : undefined
   const runLogs = getRunLogs(latestRun?.id)
   const nodeStates = getNodeStates(latestRun?.id)
+  const artifacts = getArtifactsByWorkflowId(workflow.id)
   const nodeStateMap = new Map(nodeStates.map((item) => [item.nodeId, item]))
 
   const currentNodeList = [...nodes].sort((a, b) => a.position.x - b.position.x).map((node) => {
@@ -163,6 +189,22 @@ export function EditorPage() {
   })
 
   const onConnect = (params: Connection) => {
+    const source = nodes.find((item) => item.id === params.source)
+    const target = nodes.find((item) => item.id === params.target)
+    const sourceOutputs = source?.data?.outputs ?? []
+    const targetInputs = target?.data?.inputs ?? []
+    if (
+      source &&
+      target &&
+      sourceOutputs.length > 0 &&
+      targetInputs.length > 0 &&
+      sourceOutputs.every((out) => !targetInputs.includes(out))
+    ) {
+      setEditorNotice(
+        `连线失败：${String(source.data.label)} 输出[${sourceOutputs.join(', ')}] 与 ${String(target.data.label)} 输入[${targetInputs.join(', ')}] 不匹配`,
+      )
+      return
+    }
     setEdges((eds) => addEdge({ ...params, animated: true }, eds))
   }
 
@@ -181,9 +223,16 @@ export function EditorPage() {
             : definition?.category.startsWith('05')
               ? 'backtest'
               : 'default'
-    const nextNode: Node = {
+    const nextNode: Node<FlowNodeData> = {
       id: nextId,
-      data: { label: name, styleVariant },
+      data: {
+        label: name,
+        styleVariant,
+        nodeSpecId: definition?.id,
+        params: Object.fromEntries((definition?.params ?? []).map((item) => [item.key, item.defaultValue ?? ''])),
+        inputs: definition?.inputs ?? [],
+        outputs: definition?.outputs ?? [],
+      },
       position: { x: 280 + (nodes.length % 3) * 210, y: 260 + (nodes.length % 2) * 160 },
       style: { ...styleByVariant(styleVariant), borderRadius: 10, minWidth: 148 },
     }
@@ -196,6 +245,40 @@ export function EditorPage() {
     setNodes((prev) => prev.filter((item) => item.id !== selectedNodeId))
     setEdges((prev) => prev.filter((item) => item.source !== selectedNodeId && item.target !== selectedNodeId))
     setSelectedNodeId(null)
+  }
+
+  const selectedNode = nodes.find((item) => item.id === currentSelectedNodeId)
+  const selectedParams = selectedNode?.data?.params ?? {}
+
+  const updateParam = (key: string, value: string | number | boolean) => {
+    if (!currentSelectedNodeId) return
+    setNodes((prev) =>
+      prev.map((node) => {
+        if (node.id !== currentSelectedNodeId) return node
+        const current = node.data?.params ?? {}
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            params: { ...current, [key]: value },
+          },
+        }
+      }),
+    )
+  }
+
+  const onUploadClicked = () => fileRef.current?.click()
+  const onUploadSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      await uploadArtifactForWorkflow(workflow.id, file, 'node-input')
+      setEditorNotice(`上传成功：${file.name}`)
+    } catch {
+      setEditorNotice(`上传失败：${file.name}`)
+    } finally {
+      event.target.value = ''
+    }
   }
 
   if (!workflow) {
@@ -240,9 +323,10 @@ export function EditorPage() {
         {activeTab === 'library' ? (
           <>
             <div className="panel-header">
-              <button type="button" className="primary ghost mini">
+              <button type="button" className="primary ghost mini" onClick={onUploadClicked}>
                 上传
               </button>
+              <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onUploadSelected} />
               <input
                 className="search-input"
                 placeholder="搜索目录"
@@ -250,6 +334,7 @@ export function EditorPage() {
                 onChange={(event) => setKeyword(event.target.value)}
               />
             </div>
+            {editorNotice ? <p className="muted">{editorNotice}</p> : null}
             <div className="tree-list">
               {Object.entries(groupedLibrary).map(([category, list]) => (
                 <div key={category} className="tree-group">
@@ -273,6 +358,21 @@ export function EditorPage() {
               ))}
               {Object.keys(groupedLibrary).length === 0 ? <p className="muted">未搜索到匹配节点。</p> : null}
             </div>
+            <div className="panel-header">
+              <h3>已上传文件</h3>
+              <span className="tag">{artifacts.length}</span>
+            </div>
+            <div className="tree-list">
+              {artifacts.slice(0, 6).map((item) => (
+                <div key={item.id} className="tree-group">
+                  <h4>{item.fileName}</h4>
+                  <p className="muted">
+                    {item.kind} · {(item.fileSize / 1024).toFixed(1)} KB
+                  </p>
+                </div>
+              ))}
+              {artifacts.length === 0 ? <p className="muted">暂无上传文件</p> : null}
+            </div>
           </>
         ) : null}
 
@@ -286,7 +386,11 @@ export function EditorPage() {
               <p className="muted">暂无日志，运行工作流后可查看节点执行明细。</p>
             ) : (
               runLogs.map((item) => (
-                <article key={item.id} className={`editor-log-item ${item.level.toLowerCase()}`}>
+                <article
+                  key={item.id}
+                  className={`editor-log-item ${item.level.toLowerCase()}`}
+                  onClick={() => item.nodeId && setSelectedNodeId(item.nodeId)}
+                >
                   <header>
                     <span>{item.level}</span>
                     <time>{item.createdAt}</time>
@@ -374,9 +478,38 @@ export function EditorPage() {
                 {selectedDefinition.params.map((param) => (
                   <li key={param.key}>
                     <strong>{param.key}</strong>
-                    <span>
-                      {param.type} / 默认 {String(param.defaultValue ?? '-')}
-                    </span>
+                    {param.type === 'boolean' ? (
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selectedParams[param.key] ?? param.defaultValue ?? false)}
+                          onChange={(event) => updateParam(param.key, event.target.checked)}
+                        />
+                        <span>启用</span>
+                      </label>
+                    ) : param.type === 'select' ? (
+                      <select
+                        value={String(selectedParams[param.key] ?? param.defaultValue ?? '')}
+                        onChange={(event) => updateParam(param.key, event.target.value)}
+                      >
+                        {(param.options ?? []).map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        className="search-input"
+                        value={String(selectedParams[param.key] ?? param.defaultValue ?? '')}
+                        onChange={(event) =>
+                          updateParam(
+                            param.key,
+                            param.type === 'number' ? Number(event.target.value || 0) : event.target.value,
+                          )
+                        }
+                      />
+                    )}
                   </li>
                 ))}
               </ul>

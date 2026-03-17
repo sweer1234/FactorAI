@@ -466,6 +466,46 @@ NODE_LIBRARY_CATALOG: list[dict[str, Any]] = [
 ]
 
 
+NODE_SPEC_BY_ID: dict[str, dict[str, Any]] = {item["id"]: item for item in NODE_LIBRARY_CATALOG}
+NODE_SPEC_BY_NAME: dict[str, dict[str, Any]] = {item["name"]: item for item in NODE_LIBRARY_CATALOG}
+
+
+def _style_from_category(category: str) -> str:
+    if category.startswith("01"):
+        return "data"
+    if category.startswith("02"):
+        return "feature"
+    if category.startswith("03"):
+        return "model"
+    if category.startswith("04"):
+        return "factor"
+    if category.startswith("05"):
+        return "backtest"
+    return "default"
+
+
+def _default_params(node_spec_id: str) -> dict[str, Any]:
+    spec = NODE_SPEC_BY_ID.get(node_spec_id)
+    if not spec:
+        return {}
+    result: dict[str, Any] = {}
+    for item in spec.get("params", []):
+        result[item["key"]] = item.get("defaultValue")
+    return result
+
+
+def _node(node_id: str, label: str, x: int, y: int, *, node_spec_id: str | None = None, params: dict[str, Any] | None = None):
+    spec = NODE_SPEC_BY_ID.get(node_spec_id or NODE_SPEC_BY_NAME.get(label, {}).get("id", ""))
+    return {
+        "id": node_id,
+        "label": label,
+        "position": {"x": x, "y": y},
+        "styleVariant": _style_from_category(spec["category"]) if spec else "default",
+        "nodeSpecId": spec["id"] if spec else node_spec_id,
+        "params": {**(_default_params(spec["id"]) if spec else {}), **(params or {})},
+    }
+
+
 def graph_from_labels(labels: list[str]) -> dict[str, Any]:
     x0 = 40
     spacing = 220
@@ -483,6 +523,66 @@ def graph_from_labels(labels: list[str]) -> dict[str, Any]:
         )
         if idx > 0:
             edges.append({"id": f"e{idx}", "source": f"n{idx}", "target": node_id, "animated": idx % 2 == 1})
+    return {"nodes": nodes, "edges": edges}
+
+
+def _graph_official_06() -> dict[str, Any]:
+    nodes = [
+        _node("n1", "公式输入", 40, 220),
+        _node("n2", "特征工程构建", 270, 220),
+        _node("n3", "超参数搜索(Optuna)", 500, 90),
+        _node("n4", "Xgboost模型", 500, 280),
+        _node("n5", "因子构建(机器学习)", 760, 220, node_spec_id="offline.multi_ml"),
+        _node("n6", "因子大赛参赛节点", 1010, 130),
+        _node("n7", "因子分析", 1010, 250),
+        _node("n8", "因子分析结果", 1240, 190),
+        _node("n9", "数据下载", 1010, 360),
+    ]
+    edges = [
+        {"id": "e1", "source": "n1", "target": "n2"},
+        {"id": "e2", "source": "n2", "target": "n3"},
+        {"id": "e3", "source": "n2", "target": "n4"},
+        {"id": "e4", "source": "n3", "target": "n5", "animated": True},
+        {"id": "e5", "source": "n4", "target": "n5"},
+        {"id": "e6", "source": "n5", "target": "n6"},
+        {"id": "e7", "source": "n5", "target": "n7"},
+        {"id": "e8", "source": "n7", "target": "n8"},
+        {"id": "e9", "source": "n6", "target": "n8"},
+        {"id": "e10", "source": "n5", "target": "n9"},
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
+def _graph_official_05() -> dict[str, Any]:
+    nodes = [
+        _node("n1", "模型上传", 30, 80),
+        _node("n2", "模型上传", 30, 320, node_spec_id="offline.alphagen_upload"),
+        _node("n3", "特征工程构建", 260, 80),
+        _node("n4", "特征工程构建", 260, 320),
+        _node("n5", "Xgboost模型", 500, 80),
+        _node("n6", "Xgboost模型", 500, 320),
+        _node("n7", "因子构建(机器学习)", 760, 80, node_spec_id="offline.single_model_multi_feature"),
+        _node("n8", "因子构建(机器学习)", 760, 320, node_spec_id="offline.single_model_multi_feature"),
+        _node("n9", "因子权重组合节点", 980, 200),
+        _node("n10", "因子分析", 1200, 120),
+        _node("n11", "期货回测", 1200, 300),
+        _node("n12", "因子分析结果", 1420, 120),
+        _node("n13", "策略回测结果", 1420, 300),
+    ]
+    edges = [
+        {"id": "e1", "source": "n1", "target": "n3"},
+        {"id": "e2", "source": "n2", "target": "n4"},
+        {"id": "e3", "source": "n3", "target": "n5"},
+        {"id": "e4", "source": "n4", "target": "n6"},
+        {"id": "e5", "source": "n5", "target": "n7"},
+        {"id": "e6", "source": "n6", "target": "n8"},
+        {"id": "e7", "source": "n7", "target": "n9"},
+        {"id": "e8", "source": "n8", "target": "n9"},
+        {"id": "e9", "source": "n9", "target": "n10"},
+        {"id": "e10", "source": "n9", "target": "n11"},
+        {"id": "e11", "source": "n10", "target": "n12"},
+        {"id": "e12", "source": "n11", "target": "n13"},
+    ]
     return {"nodes": nodes, "edges": edges}
 
 
@@ -631,6 +731,39 @@ TEMPLATE_CATALOG: list[dict[str, Any]] = [
         "graph": graph_from_labels(["特征工程构建", "PCA因子构建", "因子分析", "因子分析结果"]),
     },
 ]
+
+# 将关键官方模板升级为更接近真实的复杂 DAG
+for item in TEMPLATE_CATALOG:
+    if item["id"] == "tpl-official-06":
+        item["graph"] = _graph_official_06()
+    if item["id"] == "tpl-official-05":
+        item["graph"] = _graph_official_05()
+
+
+def _enrich_graph_with_spec(graph: dict[str, Any]) -> dict[str, Any]:
+    nodes = []
+    for node in graph.get("nodes", []):
+        label = node.get("label", "")
+        spec = NODE_SPEC_BY_NAME.get(label)
+        style = node.get("styleVariant")
+        if spec:
+            style = style or _style_from_category(spec["category"])
+            params = {**_default_params(spec["id"]), **(node.get("params") or {})}
+            nodes.append(
+                {
+                    **node,
+                    "styleVariant": style,
+                    "nodeSpecId": node.get("nodeSpecId") or spec["id"],
+                    "params": params,
+                }
+            )
+        else:
+            nodes.append({**node, "params": node.get("params") or {}})
+    return {"nodes": nodes, "edges": graph.get("edges", [])}
+
+
+for template in TEMPLATE_CATALOG:
+    template["graph"] = _enrich_graph_with_spec(template["graph"])
 
 
 WORKFLOW_SEED_CATALOG: list[dict[str, Any]] = [

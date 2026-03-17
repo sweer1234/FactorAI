@@ -9,8 +9,8 @@ import networkx as nx
 from sqlmodel import Session, select
 
 from ..db import engine
-from ..models import Report, Run, RunLog, Workflow, WorkflowNodeState
-from .node_handlers import RunContext, execute_node_by_label, handle_backtest
+from ..models import NodeSpec, Report, Run, RunLog, Workflow, WorkflowNodeState
+from .node_handlers import RunContext, execute_node, handle_backtest
 
 
 executor = ThreadPoolExecutor(max_workers=4)
@@ -173,6 +173,78 @@ def _node_label_map(workflow: Workflow) -> dict[str, str]:
     return {n["id"]: n.get("label", n["id"]) for n in (workflow.graph or {}).get("nodes", [])}
 
 
+def _node_payload_map(workflow: Workflow) -> dict[str, dict]:
+    return {n["id"]: n for n in (workflow.graph or {}).get("nodes", [])}
+
+
+def _nodespec_map(session: Session) -> dict[str, dict]:
+    rows = list(session.exec(select(NodeSpec)))
+    return {
+        row.id: {
+            "id": row.id,
+            "name": row.name,
+            "category": row.category,
+            "inputs": row.inputs,
+            "outputs": row.outputs,
+            "params": row.params,
+        }
+        for row in rows
+    }
+
+
+def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict]) -> None:
+    def normalize_port(port: str) -> str:
+        table_ports = {
+            "dataset",
+            "market_df",
+            "feature_df",
+            "label_df",
+            "formula_df",
+            "pred_df",
+            "df_factor",
+            "factor_pool",
+            "weighted_factor",
+            "factor_a",
+            "factor_b",
+            "split_formula_df",
+            "converted_formula",
+            "industry_feature_df",
+            "industry_factor",
+            "graph_feature_df",
+        }
+        model_ports = {"model_obj", "alphagen_obj", "best_params"}
+        report_ports = {"backtest_report", "analysis_report", "result_json", "report_json", "corr_matrix", "ic_report"}
+        artifact_ports = {"artifact_url", "contest_artifact"}
+        if port in table_ports:
+            return "table"
+        if port in model_ports:
+            return "model"
+        if port in report_ports:
+            return "report"
+        if port in artifact_ports:
+            return "artifact"
+        return port
+
+    graph = workflow.graph or {}
+    node_map = _node_payload_map(workflow)
+    for edge in graph.get("edges", []):
+        source = node_map.get(edge.get("source"))
+        target = node_map.get(edge.get("target"))
+        if not source or not target:
+            continue
+        source_spec = nodespec_map.get(source.get("nodeSpecId", ""))
+        target_spec = nodespec_map.get(target.get("nodeSpecId", ""))
+        if not source_spec or not target_spec:
+            continue
+        outputs = {normalize_port(item) for item in source_spec.get("outputs", [])}
+        inputs = {normalize_port(item) for item in target_spec.get("inputs", [])}
+        if outputs and inputs and outputs.isdisjoint(inputs):
+            raise ValueError(
+                f"连线校验失败: {source.get('label')}({edge.get('source')}) 输出 {sorted(outputs)} 与 "
+                f"{target.get('label')}({edge.get('target')}) 输入 {sorted(inputs)} 不匹配"
+            )
+
+
 def execute_run(run_id: str, workflow_id: str) -> None:
     started = time.time()
     with Session(engine) as session:
@@ -191,11 +263,16 @@ def execute_run(run_id: str, workflow_id: str) -> None:
         try:
             order = _build_order(workflow)
             labels = _node_label_map(workflow)
+            nodes_payload = _node_payload_map(workflow)
+            nodespec_map = _nodespec_map(session)
+            _validate_graph_connections(workflow, nodespec_map)
             ctx = RunContext()
             _append_run_log(run_id, workflow_id, level="INFO", message=f"执行顺序: {order}")
 
             for node_id in order:
-                node_name = labels.get(node_id, node_id)
+                node_payload = nodes_payload.get(node_id, {"id": node_id, "label": labels.get(node_id, node_id), "params": {}})
+                node_name = node_payload.get("label", labels.get(node_id, node_id))
+                node_spec = nodespec_map.get(node_payload.get("nodeSpecId", ""))
                 node_started = datetime.utcnow()
                 _upsert_node_state(
                     run_id,
@@ -210,7 +287,7 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                 _append_run_log(run_id, workflow_id, level="INFO", message=f"开始执行节点 {node_name}", node_id=node_id, node_name=node_name)
 
                 start_node_ts = time.time()
-                execute_node_by_label(node_name, ctx)
+                execute_node(node_payload, node_spec, ctx)
                 node_cost_ms = int((time.time() - start_node_ts) * 1000)
 
                 _upsert_node_state(

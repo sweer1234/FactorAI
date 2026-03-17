@@ -94,6 +94,16 @@ class WorkflowNodeState(SQLModel, table=True):
     message: str = Field(default="")
 
 
+class UploadedArtifact(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    workflow_id: str | None = Field(default=None, index=True)
+    kind: str = Field(default="generic", index=True)
+    file_name: str
+    file_size: int = Field(default=0)
+    file_path: str
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 class Report(SQLModel, table=True):
     workflow_id: str = Field(primary_key=True, index=True)
     workflow_name: str

@@ -60,6 +60,8 @@ export interface GraphNode {
     y: number
   }
   styleVariant?: 'data' | 'feature' | 'model' | 'factor' | 'backtest' | 'default'
+  nodeSpecId?: string
+  params?: Record<string, string | number | boolean>
 }
 
 export interface GraphEdge {
@@ -107,6 +109,15 @@ export interface NodeState {
   finishedAt?: string
   durationMs: number
   message: string
+}
+
+export interface Artifact {
+  id: string
+  workflowId?: string
+  kind: string
+  fileName: string
+  fileSize: number
+  createdAt: string
 }
 
 export interface ReportMetric {

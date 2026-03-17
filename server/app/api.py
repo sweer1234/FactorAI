@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
+from .config import settings
 from .db import get_session
-from .models import NodeSpec, Report, Run, RunLog, Template, Workflow, WorkflowNodeState
+from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, Workflow
 from .schemas import (
+    ArtifactRead,
     GraphUpdate,
     NodeDefinitionRead,
     NodeStateRead,
@@ -310,3 +314,76 @@ def get_report(workflow_id: str, session: Session = Depends(get_session)):
         layer_return=row.layer_return,
         updated_at=row.updated_at,
     )
+
+
+@router.post("/artifacts/upload", response_model=ArtifactRead)
+async def upload_artifact(
+    file: UploadFile = File(...),
+    kind: str = Form(default="generic"),
+    workflow_id: str | None = Form(default=None),
+    session: Session = Depends(get_session),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    suffix = Path(file.filename).suffix
+    artifact_id = f"art-{uuid.uuid4().hex[:10]}"
+    save_path = Path(settings.artifact_dir) / f"{artifact_id}{suffix}"
+    content = await file.read()
+    save_path.write_bytes(content)
+
+    row = UploadedArtifact(
+        id=artifact_id,
+        workflow_id=workflow_id,
+        kind=kind,
+        file_name=file.filename,
+        file_size=len(content),
+        file_path=str(save_path),
+        created_at=datetime.utcnow(),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return ArtifactRead(
+        id=row.id,
+        workflow_id=row.workflow_id,
+        kind=row.kind,
+        file_name=row.file_name,
+        file_size=row.file_size,
+        created_at=row.created_at,
+    )
+
+
+@router.get("/artifacts", response_model=list[ArtifactRead])
+def list_artifacts(
+    session: Session = Depends(get_session),
+    workflow_id: str | None = Query(default=None),
+    kind: str | None = Query(default=None),
+):
+    query = select(UploadedArtifact).order_by(UploadedArtifact.created_at.desc())
+    if workflow_id:
+        query = query.where(UploadedArtifact.workflow_id == workflow_id)
+    if kind:
+        query = query.where(UploadedArtifact.kind == kind)
+    rows = list(session.exec(query))
+    return [
+        ArtifactRead(
+            id=row.id,
+            workflow_id=row.workflow_id,
+            kind=row.kind,
+            file_name=row.file_name,
+            file_size=row.file_size,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/artifacts/{artifact_id}/download")
+def download_artifact(artifact_id: str, session: Session = Depends(get_session)):
+    row = session.get(UploadedArtifact, artifact_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    path = Path(row.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="artifact file missing")
+    return FileResponse(path, filename=row.file_name)
