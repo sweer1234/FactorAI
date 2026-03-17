@@ -192,7 +192,7 @@ def _nodespec_map(session: Session) -> dict[str, dict]:
     }
 
 
-def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict]) -> None:
+def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict]) -> list[str]:
     def normalize_port(port: str) -> str:
         table_ports = {
             "dataset",
@@ -227,6 +227,7 @@ def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict
 
     graph = workflow.graph or {}
     node_map = _node_payload_map(workflow)
+    warnings: list[str] = []
     for edge in graph.get("edges", []):
         source = node_map.get(edge.get("source"))
         target = node_map.get(edge.get("target"))
@@ -239,10 +240,11 @@ def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict
         outputs = {normalize_port(item) for item in source_spec.get("outputs", [])}
         inputs = {normalize_port(item) for item in target_spec.get("inputs", [])}
         if outputs and inputs and outputs.isdisjoint(inputs):
-            raise ValueError(
-                f"连线校验失败: {source.get('label')}({edge.get('source')}) 输出 {sorted(outputs)} 与 "
-                f"{target.get('label')}({edge.get('target')}) 输入 {sorted(inputs)} 不匹配"
+            warnings.append(
+                f"连线契约告警: {source.get('label')}({edge.get('source')}) 输出 {sorted(outputs)} 与 "
+                f"{target.get('label')}({edge.get('target')}) 输入 {sorted(inputs)} 不匹配，已按兼容模式继续"
             )
+    return warnings
 
 
 def execute_run(run_id: str, workflow_id: str) -> None:
@@ -265,9 +267,11 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             labels = _node_label_map(workflow)
             nodes_payload = _node_payload_map(workflow)
             nodespec_map = _nodespec_map(session)
-            _validate_graph_connections(workflow, nodespec_map)
+            contract_warnings = _validate_graph_connections(workflow, nodespec_map)
             ctx = RunContext()
             _append_run_log(run_id, workflow_id, level="INFO", message=f"执行顺序: {order}")
+            for item in contract_warnings:
+                _append_run_log(run_id, workflow_id, level="WARN", message=item)
 
             for node_id in order:
                 node_payload = nodes_payload.get(node_id, {"id": node_id, "label": labels.get(node_id, node_id), "params": {}})
