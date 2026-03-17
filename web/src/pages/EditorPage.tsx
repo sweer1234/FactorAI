@@ -153,16 +153,14 @@ export function EditorPage() {
   const nodeStates = getNodeStates(latestRun?.id)
   const nodeStateMap = new Map(nodeStates.map((item) => [item.nodeId, item]))
 
-  const currentNodeList = useMemo(() => {
-    return [...nodes].sort((a, b) => a.position.x - b.position.x).map((node) => {
-      const state = nodeStateMap.get(node.id)
-      return {
-        id: node.id,
-        name: String(node.data?.label ?? node.id),
-        status: state?.status,
-      }
-    })
-  }, [nodes, nodeStateMap])
+  const currentNodeList = [...nodes].sort((a, b) => a.position.x - b.position.x).map((node) => {
+    const state = nodeStateMap.get(node.id)
+    return {
+      id: node.id,
+      name: String(node.data?.label ?? node.id),
+      status: state?.status,
+    }
+  })
 
   const onConnect = (params: Connection) => {
     setEdges((eds) => addEdge({ ...params, animated: true }, eds))
