@@ -67,6 +67,7 @@ export function EditorPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const nodeSeqRef = useRef(1000)
   const saveDebounceRef = useRef<number | null>(null)
+  const activeWorkflowId = workflow?.id
 
   useEffect(() => {
     setNodes(seedNodes)
@@ -81,12 +82,12 @@ export function EditorPage() {
   }, [selectedNodeId, nodes])
 
   useEffect(() => {
-    if (!workflow) return
+    if (!activeWorkflowId) return
     if (saveDebounceRef.current) {
       window.clearTimeout(saveDebounceRef.current)
     }
     saveDebounceRef.current = window.setTimeout(() => {
-      void saveWorkflowGraph(workflow.id, {
+      void saveWorkflowGraph(activeWorkflowId, {
         nodes: toGraphNodes(nodes),
         edges: edges.map((edge) => ({
           id: edge.id,
@@ -96,7 +97,7 @@ export function EditorPage() {
         })),
       })
     }, 320)
-  }, [nodes, edges, saveWorkflowGraph, workflow?.id])
+  }, [nodes, edges, saveWorkflowGraph, activeWorkflowId])
 
   const groupedLibrary = useMemo(() => {
     const filtered = nodeLibrary.filter((item) => {
