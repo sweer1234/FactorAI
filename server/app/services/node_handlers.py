@@ -98,6 +98,21 @@ def _rank_zscore(values: pd.Series) -> pd.Series:
     return (values - values.mean()) / std
 
 
+def _safe_series_corr(left: pd.Series, right: pd.Series, *, method: str = "pearson") -> float:
+    joined = pd.concat([left, right], axis=1).dropna()
+    if joined.shape[0] < 2:
+        return 0.0
+    x = joined.iloc[:, 0]
+    y = joined.iloc[:, 1]
+    if float(x.std()) < 1e-12 or float(y.std()) < 1e-12:
+        return 0.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        value = x.corr(y, method=method)
+    if pd.isna(value):
+        return 0.0
+    return float(value)
+
+
 def _validate_node_inputs(
     node_name: str, node_spec: dict[str, Any] | None, params: dict[str, Any], ctx: RunContext
 ) -> list[dict[str, Any]]:
@@ -272,7 +287,7 @@ def handle_factor_weight_adjust(ctx: RunContext, params: dict[str, Any] | None =
     else:
         scores = []
         for col in factor_cols:
-            val = float(pool[col].corr(pool["future_ret"])) if "future_ret" in pool.columns else 0.0
+            val = _safe_series_corr(pool[col], pool["future_ret"], method="pearson") if "future_ret" in pool.columns else 0.0
             scores.append(abs(val))
         arr = np.array(scores, dtype=float)
         if float(arr.sum()) < 1e-9:
@@ -323,7 +338,8 @@ def handle_factor_corr_analysis(ctx: RunContext, params: dict[str, Any] | None =
         pool = ctx.frames.get("factor_pool", pool)
         factor_cols = [col for col in pool.columns if col.startswith("factor_")]
     method = str((params or {}).get("corr_method", "spearman"))
-    corr = pool[factor_cols].corr(method="spearman" if method == "spearman" else "pearson")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = pool[factor_cols].corr(method="spearman" if method == "spearman" else "pearson")
     corr = corr.reset_index().rename(columns={"index": "factor"})
     ctx.frames["corr_matrix"] = corr
     ctx.log(f"[INFO] 因子相关性分析完成({method})")

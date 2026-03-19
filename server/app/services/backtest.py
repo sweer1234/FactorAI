@@ -22,6 +22,21 @@ def _max_drawdown(values: list[float]) -> float:
     return mdd
 
 
+def _safe_series_corr(left: pd.Series, right: pd.Series, *, method: str = "pearson") -> float:
+    joined = pd.concat([left, right], axis=1).dropna()
+    if joined.shape[0] < 2:
+        return 0.0
+    x = joined.iloc[:, 0]
+    y = joined.iloc[:, 1]
+    if float(x.std()) < 1e-12 or float(y.std()) < 1e-12:
+        return 0.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        value = x.corr(y, method=method)
+    if pd.isna(value):
+        return 0.0
+    return float(value)
+
+
 def run_simple_backtest(factor_df: pd.DataFrame, fee_bps: float = 4.0) -> dict:
     if factor_df.empty:
         return {
@@ -55,15 +70,16 @@ def run_simple_backtest(factor_df: pd.DataFrame, fee_bps: float = 4.0) -> dict:
     volatility = float(np.std(pnl)) * math.sqrt(252) if len(pnl) > 1 else 0.0
     sharpe = annual_return / volatility if volatility > 1e-9 else 0.0
     mdd = _max_drawdown(equity)
-    ic_mean = float(data.groupby("date")["factor1"].corr(data["future_ret"]).fillna(0.0).mean())
-    rank_ic = float(
-        data.groupby("date")[["factor1", "future_ret"]]
-        .corr(method="spearman")
-        .unstack()
-        .iloc[:, 1]
-        .fillna(0.0)
-        .mean()
-    )
+    ic_values = [
+        _safe_series_corr(group["factor1"], group["future_ret"], method="pearson")
+        for _, group in data.groupby("date")
+    ]
+    rank_ic_values = [
+        _safe_series_corr(group["factor1"], group["future_ret"], method="spearman")
+        for _, group in data.groupby("date")
+    ]
+    ic_mean = float(np.mean(ic_values)) if ic_values else 0.0
+    rank_ic = float(np.mean(rank_ic_values)) if rank_ic_values else 0.0
 
     quantiles = []
     for idx, label in enumerate(["Q1", "Q2", "Q3", "Q4", "Q5"], start=1):
