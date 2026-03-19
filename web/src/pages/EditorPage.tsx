@@ -13,7 +13,7 @@ import {
 } from '@xyflow/react'
 import { Link, useParams } from 'react-router-dom'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { GraphNode, NodeDefinition, NodeState } from '../types'
+import type { GraphNode, GraphRevision, NodeDefinition, NodeState } from '../types'
 
 type EditorTab = 'library' | 'logs' | 'current'
 type FlowNodeData = {
@@ -92,6 +92,7 @@ export function EditorPage() {
     uploadArtifactForWorkflow,
     applyContractFixes,
     rollbackContractFixes,
+    getGraphRevisions,
   } = useWorkspace()
 
   const [activeTab, setActiveTab] = useState<EditorTab>('library')
@@ -107,15 +108,22 @@ export function EditorPage() {
   const nodeSeqRef = useRef(2000)
   const saveDebounceRef = useRef<number | null>(null)
   const refreshExecutionRef = useRef(refreshExecutionByWorkflowId)
+  const graphRevisionRef = useRef(getGraphRevisions)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [editorNotice, setEditorNotice] = useState<string | null>(null)
   const [applyingFixes, setApplyingFixes] = useState(false)
   const [rollingBackFixes, setRollingBackFixes] = useState(false)
+  const [loadingRevisions, setLoadingRevisions] = useState(false)
+  const [fixRevisions, setFixRevisions] = useState<GraphRevision[]>([])
   const activeWorkflowId = workflow?.id
 
   useEffect(() => {
     refreshExecutionRef.current = refreshExecutionByWorkflowId
   }, [refreshExecutionByWorkflowId])
+
+  useEffect(() => {
+    graphRevisionRef.current = getGraphRevisions
+  }, [getGraphRevisions])
 
   useEffect(() => {
     setNodes(seedNodes)
@@ -143,6 +151,22 @@ export function EditorPage() {
   useEffect(() => {
     if (!workflow?.id) return
     void refreshExecutionRef.current(workflow.id)
+  }, [workflow?.id])
+
+  useEffect(() => {
+    if (!workflow?.id) return
+    const load = async () => {
+      setLoadingRevisions(true)
+      try {
+        const rows = await graphRevisionRef.current(workflow.id, 'contract_fix_apply')
+        setFixRevisions(rows)
+      } catch {
+        setFixRevisions([])
+      } finally {
+        setLoadingRevisions(false)
+      }
+    }
+    void load()
   }, [workflow?.id])
 
   const currentSelectedNodeId = useMemo(() => {
@@ -290,6 +314,8 @@ export function EditorPage() {
       setEditorNotice(
         `自动修复已应用 ${appliedCount} 条，当前错误 ${result.compile.errors.length} 条，警告 ${result.compile.warnings.length} 条`,
       )
+      const rows = await graphRevisionRef.current(workflow.id, 'contract_fix_apply')
+      setFixRevisions(rows)
     } catch {
       setEditorNotice('自动修复失败，请稍后重试')
     } finally {
@@ -297,11 +323,11 @@ export function EditorPage() {
     }
   }
 
-  const onRollbackFixes = async () => {
+  const onRollbackFixes = async (revisionId?: string) => {
     if (!workflow) return
     setRollingBackFixes(true)
     try {
-      const result = await rollbackContractFixes(workflow.id)
+      const result = await rollbackContractFixes(workflow.id, revisionId)
       if (!result) {
         setEditorNotice('回滚未执行')
         return
@@ -312,6 +338,8 @@ export function EditorPage() {
       setEditorNotice(
         `已回滚修复版本（${result.restoredRevisionId.slice(-6)}），当前错误 ${result.compile.errors.length} 条，警告 ${result.compile.warnings.length} 条`,
       )
+      const rows = await graphRevisionRef.current(workflow.id, 'contract_fix_apply')
+      setFixRevisions(rows)
     } catch {
       setEditorNotice('回滚失败：暂无可回滚版本')
     } finally {
@@ -420,6 +448,25 @@ export function EditorPage() {
               />
             </div>
             {editorNotice ? <p className="muted">{editorNotice}</p> : null}
+            <div className="tree-group">
+              <h4>
+                修复历史
+                <span>{loadingRevisions ? '加载中' : fixRevisions.length}</span>
+              </h4>
+              {fixRevisions.length === 0 ? (
+                <p className="muted">暂无自动修复历史</p>
+              ) : (
+                <ul>
+                  {fixRevisions.slice(0, 6).map((item) => (
+                    <li key={item.id}>
+                      <button type="button" onClick={() => void onRollbackFixes(item.id)} disabled={rollingBackFixes}>
+                        #{item.revisionNo} · {item.id.slice(-6)}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <div className="tree-list">
               {Object.entries(groupedLibrary).map(([category, list]) => (
                 <div key={category} className="tree-group">

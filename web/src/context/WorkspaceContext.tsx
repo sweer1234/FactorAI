@@ -7,6 +7,7 @@ import {
   fetchArtifacts,
   fetchBootstrap,
   fetchReport,
+  fetchWorkflowGraphRevisions,
   fetchRunLogs,
   fetchRunNodeStates,
   fetchRuns,
@@ -28,6 +29,7 @@ import type {
   Artifact,
   ContractFixApplyResult,
   ContractFixRollbackResult,
+  GraphRevision,
   NodeDefinition,
   NodeState,
   ReportSnapshot,
@@ -70,7 +72,8 @@ export interface WorkspaceStore {
   refreshArtifactsByWorkflowId: (workflowId: string) => Promise<void>
   uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<Artifact | null>
   applyContractFixes: (workflowId: string) => Promise<ContractFixApplyResult | null>
-  rollbackContractFixes: (workflowId: string) => Promise<ContractFixRollbackResult | null>
+  rollbackContractFixes: (workflowId: string, revisionId?: string) => Promise<ContractFixRollbackResult | null>
+  getGraphRevisions: (workflowId: string, source?: string) => Promise<GraphRevision[]>
   notice: string | null
 }
 
@@ -302,15 +305,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return result
   }
 
-  const rollbackContractFixesForWorkflow: WorkspaceStore['rollbackContractFixes'] = async (workflowId) => {
+  const rollbackContractFixesForWorkflow: WorkspaceStore['rollbackContractFixes'] = async (
+    workflowId,
+    revisionId,
+  ) => {
     if (!backendOnline) {
       updateNotice('后端未连接，无法回滚自动修复')
       return null
     }
-    const result = await rollbackWorkflowContractFixes(workflowId)
+    const result = await rollbackWorkflowContractFixes(workflowId, revisionId)
     setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? result.workflow : item)))
     updateNotice('已回滚到自动修复前的图版本')
     return result
+  }
+
+  const getGraphRevisions: WorkspaceStore['getGraphRevisions'] = async (workflowId, source) => {
+    if (!backendOnline) return []
+    return fetchWorkflowGraphRevisions(workflowId, { source, limit: 30 })
   }
 
   const value: WorkspaceStore = {
@@ -340,6 +351,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     uploadArtifactForWorkflow,
     applyContractFixes: applyContractFixesForWorkflow,
     rollbackContractFixes: rollbackContractFixesForWorkflow,
+    getGraphRevisions,
     notice,
   }
 
