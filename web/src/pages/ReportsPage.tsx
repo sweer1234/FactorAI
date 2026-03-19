@@ -4,6 +4,12 @@ import { fetchWorkflowRunCompare, fetchWorkflowSloTemplate, fetchWorkflowSloView
 import { useWorkspace } from '../hooks/useWorkspace'
 import type { RunCompare, SloTemplate, SloView } from '../types'
 
+const TREND_DEFINITIONS = [
+  { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
+  { key: 'failed_nodes', label: '失败节点数', color: '#ff8a96' },
+  { key: 'warn_logs', label: 'WARN 日志数', color: '#ffc06f' },
+] as const
+
 function pct(value: number) {
   return `${(value * 100).toFixed(1)}%`
 }
@@ -47,15 +53,9 @@ export function ReportsPage() {
     void load()
   }, [backendOnline, workflow?.id, workflowRuns])
 
-  const trendDefinitions = [
-    { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
-    { key: 'failed_nodes', label: '失败节点数', color: '#ff8a96' },
-    { key: 'warn_logs', label: 'WARN 日志数', color: '#ffc06f' },
-  ] as const
-
   const trendSeries = useMemo(() => {
     if (!runCompare || runCompare.runIds.length === 0) return []
-    return trendDefinitions.map((def) => {
+    return TREND_DEFINITIONS.map((def) => {
       const values = runCompare.runIds.map((runId) => {
         const raw = runCompare.metrics[runId]?.[def.key]
         const num = Number(raw ?? 0)
