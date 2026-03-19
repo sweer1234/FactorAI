@@ -33,6 +33,13 @@ def _apply_lightweight_migrations() -> None:
             if not _column_exists(conn, "template", "created_at"):
                 conn.execute(text("ALTER TABLE template ADD COLUMN created_at DATETIME"))
 
+        # workflow 表新增字段
+        if _table_exists(conn, "workflow"):
+            if not _column_exists(conn, "workflow", "slo_profile"):
+                conn.execute(text("ALTER TABLE workflow ADD COLUMN slo_profile TEXT"))
+            if not _column_exists(conn, "workflow", "slo_overrides"):
+                conn.execute(text("ALTER TABLE workflow ADD COLUMN slo_overrides JSON"))
+
         # run 表新增字段
         if _table_exists(conn, "run"):
             if not _column_exists(conn, "run", "updated_at"):

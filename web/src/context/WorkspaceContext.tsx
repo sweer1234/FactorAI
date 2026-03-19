@@ -12,6 +12,7 @@ import {
   fetchRuns,
   fetchTemplates,
   fetchWorkflows,
+  rollbackWorkflowContractFixes,
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
   saveWorkflowGraph as apiSaveWorkflowGraph,
@@ -26,6 +27,7 @@ import {
 import type {
   Artifact,
   ContractFixApplyResult,
+  ContractFixRollbackResult,
   NodeDefinition,
   NodeState,
   ReportSnapshot,
@@ -68,6 +70,7 @@ export interface WorkspaceStore {
   refreshArtifactsByWorkflowId: (workflowId: string) => Promise<void>
   uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<Artifact | null>
   applyContractFixes: (workflowId: string) => Promise<ContractFixApplyResult | null>
+  rollbackContractFixes: (workflowId: string) => Promise<ContractFixRollbackResult | null>
   notice: string | null
 }
 
@@ -299,6 +302,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return result
   }
 
+  const rollbackContractFixesForWorkflow: WorkspaceStore['rollbackContractFixes'] = async (workflowId) => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法回滚自动修复')
+      return null
+    }
+    const result = await rollbackWorkflowContractFixes(workflowId)
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? result.workflow : item)))
+    updateNotice('已回滚到自动修复前的图版本')
+    return result
+  }
+
   const value: WorkspaceStore = {
     workflows,
     templates,
@@ -325,6 +339,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     refreshArtifactsByWorkflowId,
     uploadArtifactForWorkflow,
     applyContractFixes: applyContractFixesForWorkflow,
+    rollbackContractFixes: rollbackContractFixesForWorkflow,
     notice,
   }
 

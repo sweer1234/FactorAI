@@ -44,6 +44,8 @@ class WorkflowRead(BaseModel):
     last_run: datetime | None = None
     description: str | None = None
     source_template_id: str | None = None
+    slo_profile: str | None = None
+    slo_overrides: dict[str, int | float] = Field(default_factory=dict)
     graph: WorkflowGraph
 
 
@@ -212,6 +214,31 @@ class ContractFixApplyRead(BaseModel):
     workflow: WorkflowRead
     compile: ContractCompileRead
     applied_actions: list[ContractFixAppliedActionRead] = Field(default_factory=list)
+
+
+class ContractFixRollbackRequest(BaseModel):
+    revision_id: str | None = None
+
+
+class ContractFixRollbackRead(BaseModel):
+    workflow: WorkflowRead
+    compile: ContractCompileRead
+    restored_revision_id: str
+    applied_actions: list[ContractFixAppliedActionRead] = Field(default_factory=list)
+
+
+class GraphRevisionRead(BaseModel):
+    id: str
+    workflow_id: str
+    revision_no: int
+    source: str
+    meta: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class SLOConfigUpdateRequest(BaseModel):
+    profile: str | None = None
+    overrides: dict[str, int | float] = Field(default_factory=dict)
 
 
 class RunCompareRead(BaseModel):

@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from .config import settings
 from .db import get_session
-from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, Workflow
+from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, Workflow, WorkflowGraphRevision
 from .schemas import (
     ArtifactRead,
     ArtifactRollbackRequest,
@@ -21,7 +21,10 @@ from .schemas import (
     ContractFixApplyRead,
     ContractFixApplyRequest,
     ContractFixAppliedActionRead,
+    ContractFixRollbackRead,
+    ContractFixRollbackRequest,
     ContractFixSuggestionRead,
+    GraphRevisionRead,
     GraphUpdate,
     ContractIssueRead,
     NodeDefinitionRead,
@@ -30,6 +33,7 @@ from .schemas import (
     RunAlertsRead,
     RunCompareRead,
     RunMetricPointRead,
+    SLOConfigUpdateRequest,
     SLOTemplateRead,
     SLOViewRead,
     RunLogRead,
@@ -51,7 +55,7 @@ from .services.execution import (
     start_run,
 )
 from .services.node_library import NODE_LIBRARY
-from .services.slo import DEFAULT_THRESHOLDS, resolve_slo_profile
+from .services.slo import DEFAULT_THRESHOLDS, PROFILE_THRESHOLDS, resolve_slo_profile
 
 
 router = APIRouter()
@@ -68,6 +72,8 @@ def _workflow_to_read(row: Workflow) -> WorkflowRead:
         last_run=row.last_run,
         description=row.description,
         source_template_id=row.source_template_id,
+        slo_profile=row.slo_profile,
+        slo_overrides={key: float(value) for key, value in (row.slo_overrides or {}).items()},
         graph=row.graph or {"nodes": [], "edges": []},
     )
 
@@ -134,6 +140,36 @@ def _artifact_to_read(row: UploadedArtifact) -> ArtifactRead:
     )
 
 
+def _next_graph_revision_no(session: Session, workflow_id: str) -> int:
+    row = session.exec(
+        select(WorkflowGraphRevision.revision_no)
+        .where(WorkflowGraphRevision.workflow_id == workflow_id)
+        .order_by(WorkflowGraphRevision.revision_no.desc())
+    ).first()
+    return int(row or 0) + 1
+
+
+def _create_graph_revision(
+    session: Session,
+    workflow_id: str,
+    *,
+    source: str,
+    graph: dict[str, Any],
+    meta: dict[str, Any] | None = None,
+) -> WorkflowGraphRevision:
+    revision = WorkflowGraphRevision(
+        id=f"wgr-{uuid.uuid4().hex[:10]}",
+        workflow_id=workflow_id,
+        revision_no=_next_graph_revision_no(session, workflow_id),
+        source=source,
+        graph=deepcopy(graph or {"nodes": [], "edges": []}),
+        meta=meta or {},
+        created_at=datetime.utcnow(),
+    )
+    session.add(revision)
+    return revision
+
+
 def _style_variant_by_category(category: str) -> str:
     if category.startswith("01"):
         return "data"
@@ -185,8 +221,10 @@ def _resolve_slo_thresholds(
 ) -> dict[str, int]:
     base = dict(DEFAULT_THRESHOLDS)
     if use_template:
-        template = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=profile)
+        preferred_profile = profile or workflow.slo_profile
+        template = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=preferred_profile)
         base.update({key: int(value) for key, value in template.get("thresholds", {}).items()})
+    base.update({key: int(value) for key, value in (workflow.slo_overrides or {}).items()})
     for key, value in overrides.items():
         if value is not None:
             base[key] = int(value)
@@ -440,6 +478,17 @@ def update_workflow_graph(
                 "suggestions": compile_result.get("suggestions", []),
             },
         )
+    _create_graph_revision(
+        session,
+        row.id,
+        source="graph_update",
+        graph=row.graph or {"nodes": [], "edges": []},
+        meta={
+            "strict_contract": strict_contract,
+            "errors": len(compile_result.get("errors", [])),
+            "warnings": len(compile_result.get("warnings", [])),
+        },
+    )
     row.graph = payload.graph.model_dump()
     row.updated_at = datetime.utcnow()
     session.add(row)
@@ -473,6 +522,22 @@ def apply_contract_fix_suggestions(
         suggestion_indexes=payload.suggestion_indexes,
         max_actions=payload.max_actions,
     )
+    checkpoint = _create_graph_revision(
+        session,
+        row.id,
+        source="contract_fix_apply",
+        graph=row.graph or {"nodes": [], "edges": []},
+        meta={
+            "strict": payload.strict,
+            "suggestion_indexes": payload.suggestion_indexes,
+            "max_actions": payload.max_actions,
+            "suggestions_count": len(suggestions),
+            "applied_count": len([item for item in applied_actions if item.get("status") == "applied"]),
+        },
+    )
+    for item in applied_actions:
+        item.setdefault("patch", {})
+        item["patch"]["checkpoint_revision_id"] = checkpoint.id
     row.graph = next_graph
     row.updated_at = datetime.utcnow()
     session.add(row)
@@ -512,6 +577,119 @@ def get_contract_fix_suggestions(
     nodespec_map = _nodespec_map(session)
     result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
     return [ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])]
+
+
+@router.post("/workflows/{workflow_id}/contract-fix-rollback", response_model=ContractFixRollbackRead)
+def rollback_contract_fixes(
+    workflow_id: str,
+    payload: ContractFixRollbackRequest,
+    session: Session = Depends(get_session),
+):
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    if payload.revision_id:
+        target_revision = session.get(WorkflowGraphRevision, payload.revision_id)
+        if not target_revision or target_revision.workflow_id != workflow_id:
+            raise HTTPException(status_code=404, detail="revision not found")
+    else:
+        target_revision = session.exec(
+            select(WorkflowGraphRevision)
+            .where(
+                WorkflowGraphRevision.workflow_id == workflow_id,
+                WorkflowGraphRevision.source == "contract_fix_apply",
+            )
+            .order_by(WorkflowGraphRevision.revision_no.desc())
+        ).first()
+        if not target_revision:
+            raise HTTPException(status_code=404, detail="no contract fix checkpoint found")
+
+    _create_graph_revision(
+        session,
+        row.id,
+        source="contract_fix_rollback",
+        graph=row.graph or {"nodes": [], "edges": []},
+        meta={"restored_revision_id": target_revision.id},
+    )
+    row.graph = target_revision.graph or {"nodes": [], "edges": []}
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+
+    nodespec_map = _nodespec_map(session)
+    compile_after = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=False)
+    return ContractFixRollbackRead(
+        workflow=_workflow_to_read(row),
+        compile=_to_compile_read(compile_after, strict=False),
+        restored_revision_id=target_revision.id,
+        applied_actions=[
+            ContractFixAppliedActionRead(
+                index=0,
+                action="rollback_contract_fix",
+                status="applied",
+                message="已回滚到自动修复前图版本",
+                patch={"restored_revision_id": target_revision.id},
+            )
+        ],
+    )
+
+
+@router.get("/workflows/{workflow_id}/graph-revisions", response_model=list[GraphRevisionRead])
+def list_workflow_graph_revisions(
+    workflow_id: str,
+    source: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    query = select(WorkflowGraphRevision).where(WorkflowGraphRevision.workflow_id == workflow_id)
+    if source:
+        query = query.where(WorkflowGraphRevision.source == source)
+    rows = list(session.exec(query.order_by(WorkflowGraphRevision.revision_no.desc())))[:limit]
+    return [
+        GraphRevisionRead(
+            id=item.id,
+            workflow_id=item.workflow_id,
+            revision_no=item.revision_no,
+            source=item.source,
+            meta=item.meta or {},
+            created_at=item.created_at,
+        )
+        for item in rows
+    ]
+
+
+@router.put("/workflows/{workflow_id}/observability/slo-config", response_model=SLOTemplateRead)
+def update_workflow_slo_config(
+    workflow_id: str,
+    payload: SLOConfigUpdateRequest,
+    session: Session = Depends(get_session),
+):
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    if payload.profile and payload.profile not in PROFILE_THRESHOLDS:
+        raise HTTPException(status_code=400, detail=f"unsupported profile: {payload.profile}")
+    row.slo_profile = payload.profile or None
+    row.slo_overrides = {key: float(value) for key, value in payload.overrides.items()}
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+
+    template = resolve_slo_profile(row.category, row.tags, preferred_profile=row.slo_profile)
+    thresholds = {key: int(value) for key, value in template.get("thresholds", DEFAULT_THRESHOLDS).items()}
+    thresholds.update({key: int(value) for key, value in (row.slo_overrides or {}).items()})
+    return SLOTemplateRead(
+        workflow_id=row.id,
+        workflow_category=row.category,
+        profile=row.slo_profile or str(template.get("profile", "default")),
+        reason="workflow_config" if row.slo_profile or row.slo_overrides else str(template.get("reason", "category_auto")),
+        thresholds=thresholds,
+    )
 
 
 @router.post("/workflows/{workflow_id}/draft", response_model=WorkflowRead)
@@ -856,13 +1034,16 @@ def get_workflow_slo_template(
     workflow = session.get(Workflow, workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="workflow not found")
-    result = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=profile)
+    preferred_profile = profile or workflow.slo_profile
+    result = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=preferred_profile)
+    thresholds = {key: int(value) for key, value in result.get("thresholds", DEFAULT_THRESHOLDS).items()}
+    thresholds.update({key: int(value) for key, value in (workflow.slo_overrides or {}).items()})
     return SLOTemplateRead(
         workflow_id=workflow.id,
         workflow_category=workflow.category,
-        profile=str(result.get("profile", "default")),
-        reason=str(result.get("reason", "category_auto")),
-        thresholds={key: int(value) for key, value in result.get("thresholds", DEFAULT_THRESHOLDS).items()},
+        profile=str(preferred_profile or result.get("profile", "default")),
+        reason="workflow_config" if workflow.slo_profile or workflow.slo_overrides else str(result.get("reason", "category_auto")),
+        thresholds=thresholds,
     )
 
 

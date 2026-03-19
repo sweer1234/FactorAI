@@ -91,6 +91,7 @@ export function EditorPage() {
     getArtifactsByWorkflowId,
     uploadArtifactForWorkflow,
     applyContractFixes,
+    rollbackContractFixes,
   } = useWorkspace()
 
   const [activeTab, setActiveTab] = useState<EditorTab>('library')
@@ -109,6 +110,7 @@ export function EditorPage() {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [editorNotice, setEditorNotice] = useState<string | null>(null)
   const [applyingFixes, setApplyingFixes] = useState(false)
+  const [rollingBackFixes, setRollingBackFixes] = useState(false)
   const activeWorkflowId = workflow?.id
 
   useEffect(() => {
@@ -295,6 +297,28 @@ export function EditorPage() {
     }
   }
 
+  const onRollbackFixes = async () => {
+    if (!workflow) return
+    setRollingBackFixes(true)
+    try {
+      const result = await rollbackContractFixes(workflow.id)
+      if (!result) {
+        setEditorNotice('回滚未执行')
+        return
+      }
+      const nextGraph = result.workflow.graph
+      setNodes(toReactNodes(nextGraph.nodes ?? [], nodeLibrary))
+      setEdges((nextGraph.edges ?? []).map((edge) => ({ ...edge })))
+      setEditorNotice(
+        `已回滚修复版本（${result.restoredRevisionId.slice(-6)}），当前错误 ${result.compile.errors.length} 条，警告 ${result.compile.warnings.length} 条`,
+      )
+    } catch {
+      setEditorNotice('回滚失败：暂无可回滚版本')
+    } finally {
+      setRollingBackFixes(false)
+    }
+  }
+
   const bindArtifactToSelected = (artifactId: string, fileName: string) => {
     if (!selectedNodeSpecId) {
       setEditorNotice('请先选择一个节点')
@@ -378,6 +402,14 @@ export function EditorPage() {
               </button>
               <button type="button" className="primary ghost mini" onClick={() => void onAutoApplyFixes()} disabled={applyingFixes}>
                 {applyingFixes ? '修复中…' : '自动修复契约'}
+              </button>
+              <button
+                type="button"
+                className="primary ghost mini"
+                onClick={() => void onRollbackFixes()}
+                disabled={rollingBackFixes}
+              >
+                {rollingBackFixes ? '回滚中…' : '回滚修复'}
               </button>
               <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onUploadSelected} />
               <input

@@ -3,7 +3,9 @@ import type {
   ContractCompileResult,
   ContractFixAppliedAction,
   ContractFixApplyResult,
+  ContractFixRollbackResult,
   ContractFixSuggestion,
+  GraphRevision,
   NodeState,
   NodeDefinition,
   ReportSnapshot,
@@ -29,6 +31,8 @@ interface ApiWorkflow {
   last_run?: string | null
   description?: string | null
   source_template_id?: string | null
+  slo_profile?: string | null
+  slo_overrides?: Record<string, number> | null
   graph: WorkflowGraph
 }
 
@@ -150,6 +154,13 @@ interface ApiContractFixApply {
   applied_actions: ApiContractFixAppliedAction[]
 }
 
+interface ApiContractFixRollback {
+  workflow: ApiWorkflow
+  compile: ApiContractCompile
+  restored_revision_id: string
+  applied_actions: ApiContractFixAppliedAction[]
+}
+
 interface ApiRunCompare {
   workflow_id: string
   run_ids: string[]
@@ -174,6 +185,15 @@ interface ApiSloTemplate {
   thresholds: Record<string, number>
 }
 
+interface ApiGraphRevision {
+  id: string
+  workflow_id: string
+  revision_no: number
+  source: string
+  meta: Record<string, unknown>
+  created_at: string
+}
+
 function toWorkflow(item: ApiWorkflow): Workflow {
   return {
     id: item.id,
@@ -185,6 +205,8 @@ function toWorkflow(item: ApiWorkflow): Workflow {
     lastRun: item.last_run ?? undefined,
     description: item.description ?? undefined,
     sourceTemplateId: item.source_template_id ?? undefined,
+    sloProfile: item.slo_profile ?? undefined,
+    sloOverrides: item.slo_overrides ?? undefined,
     graph: item.graph ?? { nodes: [], edges: [] },
   }
 }
@@ -320,6 +342,15 @@ function toContractFixApply(item: ApiContractFixApply): ContractFixApplyResult {
   }
 }
 
+function toContractFixRollback(item: ApiContractFixRollback): ContractFixRollbackResult {
+  return {
+    workflow: toWorkflow(item.workflow),
+    compile: toContractCompile(item.compile),
+    restoredRevisionId: item.restored_revision_id,
+    appliedActions: item.applied_actions.map(toContractFixAppliedAction),
+  }
+}
+
 function toRunCompare(item: ApiRunCompare): RunCompare {
   return {
     workflowId: item.workflow_id,
@@ -335,6 +366,17 @@ function toSloTemplate(item: ApiSloTemplate): SloTemplate {
     profile: item.profile,
     reason: item.reason,
     thresholds: item.thresholds,
+  }
+}
+
+function toGraphRevision(item: ApiGraphRevision): GraphRevision {
+  return {
+    id: item.id,
+    workflowId: item.workflow_id,
+    revisionNo: item.revision_no,
+    source: item.source,
+    meta: item.meta as Record<string, string | number | boolean | null | object | unknown[]>,
+    createdAt: item.created_at,
   }
 }
 
@@ -557,6 +599,26 @@ export async function applyWorkflowContractFixes(
   return toContractFixApply(data)
 }
 
+export async function rollbackWorkflowContractFixes(workflowId: string, revisionId?: string) {
+  const data = await request<ApiContractFixRollback>(`/workflows/${workflowId}/contract-fix-rollback`, {
+    method: 'POST',
+    body: JSON.stringify({ revision_id: revisionId ?? null }),
+  })
+  return toContractFixRollback(data)
+}
+
+export async function fetchWorkflowGraphRevisions(
+  workflowId: string,
+  params?: { source?: string; limit?: number },
+) {
+  const query = new URLSearchParams()
+  if (params?.source) query.set('source', params.source)
+  if (params?.limit) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiGraphRevision[]>(`/workflows/${workflowId}/graph-revisions${suffix}`)
+  return data.map(toGraphRevision)
+}
+
 export async function fetchWorkflowRunCompare(workflowId: string, runIds?: string[]) {
   const query = new URLSearchParams()
   if (runIds && runIds.length > 0) query.set('run_ids', runIds.join(','))
@@ -595,6 +657,20 @@ export async function fetchWorkflowSloTemplate(workflowId: string, profile?: str
   if (profile) query.set('profile', profile)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiSloTemplate>(`/workflows/${workflowId}/observability/slo-template${suffix}`)
+  return toSloTemplate(data)
+}
+
+export async function updateWorkflowSloConfig(
+  workflowId: string,
+  payload: { profile?: string | null; overrides?: Record<string, number> },
+) {
+  const data = await request<ApiSloTemplate>(`/workflows/${workflowId}/observability/slo-config`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      profile: payload.profile ?? null,
+      overrides: payload.overrides ?? {},
+    }),
+  })
   return toSloTemplate(data)
 }
 

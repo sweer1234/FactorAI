@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { fetchWorkflowRunCompare, fetchWorkflowSloTemplate, fetchWorkflowSloView } from '../api/client'
+import {
+  fetchWorkflowRunCompare,
+  fetchWorkflowSloTemplate,
+  fetchWorkflowSloView,
+  updateWorkflowSloConfig,
+} from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
 import type { RunCompare, SloTemplate, SloView } from '../types'
 
@@ -9,6 +14,8 @@ const TREND_DEFINITIONS = [
   { key: 'failed_nodes', label: '失败节点数', color: '#ff8a96' },
   { key: 'warn_logs', label: 'WARN 日志数', color: '#ffc06f' },
 ] as const
+
+const SLO_PROFILE_OPTIONS = ['auto', 'default', 'ml_relaxed', 'competition', 'backtest_strict', 'offline_teaching']
 
 function pct(value: number) {
   return `${(value * 100).toFixed(1)}%`
@@ -25,6 +32,14 @@ export function ReportsPage() {
   const [runCompare, setRunCompare] = useState<RunCompare | null>(null)
   const [sloView, setSloView] = useState<SloView | null>(null)
   const [sloTemplate, setSloTemplate] = useState<SloTemplate | null>(null)
+  const [sloProfile, setSloProfile] = useState('auto')
+  const [sloThresholds, setSloThresholds] = useState({
+    p95_node_duration_ms: 800,
+    failed_nodes: 0,
+    warn_logs: 20,
+    error_logs: 0,
+  })
+  const [savingSlo, setSavingSlo] = useState(false)
 
   const workflowRuns = useMemo(
     () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
@@ -44,6 +59,13 @@ export function ReportsPage() {
         setRunCompare(compare)
         setSloView(slo)
         setSloTemplate(template)
+        setSloProfile(template.profile || 'auto')
+        setSloThresholds({
+          p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
+          failed_nodes: Number(template.thresholds.failed_nodes ?? 0),
+          warn_logs: Number(template.thresholds.warn_logs ?? 20),
+          error_logs: Number(template.thresholds.error_logs ?? 0),
+        })
       } catch {
         setRunCompare(null)
         setSloView(null)
@@ -52,6 +74,27 @@ export function ReportsPage() {
     }
     void load()
   }, [backendOnline, workflow?.id, workflowRuns])
+
+  const saveSloConfig = async () => {
+    if (!workflow?.id) return
+    setSavingSlo(true)
+    try {
+      const template = await updateWorkflowSloConfig(workflow.id, {
+        profile: sloProfile === 'auto' ? null : sloProfile,
+        overrides: {
+          p95_node_duration_ms: Number(sloThresholds.p95_node_duration_ms),
+          failed_nodes: Number(sloThresholds.failed_nodes),
+          warn_logs: Number(sloThresholds.warn_logs),
+          error_logs: Number(sloThresholds.error_logs),
+        },
+      })
+      setSloTemplate(template)
+      const slo = await fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true })
+      setSloView(slo)
+    } finally {
+      setSavingSlo(false)
+    }
+  }
 
   const trendSeries = useMemo(() => {
     if (!runCompare || runCompare.runIds.length === 0) return []
@@ -194,6 +237,71 @@ export function ReportsPage() {
             {sloTemplate ? (
               <p className="muted">按「{sloTemplate.workflowCategory}」自动匹配模板（{sloTemplate.reason}）。</p>
             ) : null}
+            <div className="slo-config-grid">
+              <label>
+                Profile
+                <select value={sloProfile} onChange={(event) => setSloProfile(event.target.value)}>
+                  {SLO_PROFILE_OPTIONS.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                P95 阈值(ms)
+                <input
+                  className="search-input"
+                  type="number"
+                  min={1}
+                  value={String(sloThresholds.p95_node_duration_ms)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, p95_node_duration_ms: Number(event.target.value || 1) }))
+                  }
+                />
+              </label>
+              <label>
+                失败节点阈值
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  value={String(sloThresholds.failed_nodes)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, failed_nodes: Number(event.target.value || 0) }))
+                  }
+                />
+              </label>
+              <label>
+                WARN 阈值
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  value={String(sloThresholds.warn_logs)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, warn_logs: Number(event.target.value || 0) }))
+                  }
+                />
+              </label>
+              <label>
+                ERROR 阈值
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  value={String(sloThresholds.error_logs)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, error_logs: Number(event.target.value || 0) }))
+                  }
+                />
+              </label>
+              <div className="header-actions">
+                <button type="button" className="primary ghost" disabled={savingSlo} onClick={() => void saveSloConfig()}>
+                  {savingSlo ? '保存中…' : '保存 SLO 配置'}
+                </button>
+              </div>
+            </div>
             <div className="slo-runs">
               {sloView.runs.slice(-8).map((item) => (
                 <div key={String(item.run_id)} className={`slo-run ${item.slo_pass ? 'pass' : 'fail'}`}>

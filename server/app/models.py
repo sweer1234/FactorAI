@@ -19,6 +19,8 @@ class Workflow(SQLModel, table=True):
     last_run: datetime | None = None
     description: str | None = None
     source_template_id: str | None = None
+    slo_profile: str | None = Field(default=None, index=True)
+    slo_overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     graph: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -131,4 +133,14 @@ class RunMetricPoint(SQLModel, table=True):
     metric_name: str = Field(index=True)
     value: float = Field(default=0.0)
     tags: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class WorkflowGraphRevision(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    workflow_id: str = Field(index=True)
+    revision_no: int = Field(default=1, index=True)
+    source: str = Field(default="graph_update", index=True)
+    graph: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    meta: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=now_utc)

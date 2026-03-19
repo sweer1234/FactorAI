@@ -11,6 +11,8 @@ export interface Workflow {
   lastRun?: string
   description?: string
   sourceTemplateId?: string
+  sloProfile?: string
+  sloOverrides?: Record<string, number>
   graph: WorkflowGraph
 }
 
@@ -193,6 +195,13 @@ export interface ContractFixApplyResult {
   appliedActions: ContractFixAppliedAction[]
 }
 
+export interface ContractFixRollbackResult {
+  workflow: Workflow
+  compile: ContractCompileResult
+  restoredRevisionId: string
+  appliedActions: ContractFixAppliedAction[]
+}
+
 export interface RunCompare {
   workflowId: string
   runIds: string[]
@@ -215,4 +224,13 @@ export interface SloTemplate {
   profile: string
   reason: string
   thresholds: Record<string, number>
+}
+
+export interface GraphRevision {
+  id: string
+  workflowId: string
+  revisionNo: number
+  source: string
+  meta: Record<string, string | number | boolean | null | object | unknown[]>
+  createdAt: string
 }
