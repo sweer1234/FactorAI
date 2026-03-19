@@ -242,12 +242,14 @@ function toArtifact(item: ApiArtifact): Artifact {
 }
 
 function toContractIssue(item: ApiContractIssue) {
+  const detail =
+    (item.detail as Record<string, string | number | boolean | null | object | unknown[]>) ?? {}
   return {
     code: item.code,
     message: item.message,
     nodeId: item.node_id ?? undefined,
     edgeId: item.edge_id ?? undefined,
-    detail: (item.detail as Record<string, unknown>) ?? {},
+    detail,
   }
 }
 
