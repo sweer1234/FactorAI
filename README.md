@@ -45,6 +45,26 @@ npm run dev
 
 前端默认请求：`http://localhost:8000/api`
 
+## Cloud Agent 环境预装
+
+仓库已提供 Cloud Agent 环境配置文件：
+
+- `.cursor/environment.json`
+- `.cursor/install.sh`
+
+环境启动时会自动预装：
+
+- Python 依赖：`server/requirements.txt`
+- Node 依赖：`web/package.json`（优先 `npm ci`）
+
+并可直接在仓库根目录执行：
+
+```bash
+python3 -m compileall server/app
+npm run lint
+npm run build
+```
+
 ## 已实现页面（MVP）
 
 1. 首页（品牌入口）
