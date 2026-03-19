@@ -247,6 +247,22 @@ class RunCompareRead(BaseModel):
     metrics: dict[str, dict[str, float | int | str | None]] = Field(default_factory=dict)
 
 
+class TrendPointRead(BaseModel):
+    run_id: str
+    created_at: str
+    status: str
+    value: float
+    threshold: float | None = None
+
+
+class WorkflowTrendRead(BaseModel):
+    workflow_id: str
+    metrics: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    thresholds: dict[str, int | float] = Field(default_factory=dict)
+    points: dict[str, list[TrendPointRead]] = Field(default_factory=dict)
+
+
 class SLOViewRead(BaseModel):
     workflow_id: str
     window_size: int

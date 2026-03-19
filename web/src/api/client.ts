@@ -12,6 +12,7 @@ import type {
   RunLog,
   RunRecord,
   RunCompare,
+  WorkflowTrends,
   SloTemplate,
   SloView,
   Template,
@@ -165,6 +166,22 @@ interface ApiRunCompare {
   workflow_id: string
   run_ids: string[]
   metrics: Record<string, Record<string, string | number | boolean | null>>
+}
+
+interface ApiTrendPoint {
+  run_id: string
+  created_at: string
+  status: string
+  value: number
+  threshold?: number | null
+}
+
+interface ApiWorkflowTrends {
+  workflow_id: string
+  metrics: string[]
+  run_ids: string[]
+  thresholds: Record<string, number>
+  points: Record<string, ApiTrendPoint[]>
 }
 
 interface ApiSloView {
@@ -356,6 +373,27 @@ function toRunCompare(item: ApiRunCompare): RunCompare {
     workflowId: item.workflow_id,
     runIds: item.run_ids,
     metrics: item.metrics,
+  }
+}
+
+function toWorkflowTrends(item: ApiWorkflowTrends): WorkflowTrends {
+  return {
+    workflowId: item.workflow_id,
+    metrics: item.metrics,
+    runIds: item.run_ids,
+    thresholds: item.thresholds,
+    points: Object.fromEntries(
+      Object.entries(item.points).map(([metricName, rows]) => [
+        metricName,
+        rows.map((row) => ({
+          runId: row.run_id,
+          createdAt: row.created_at,
+          status: row.status,
+          value: Number(row.value ?? 0),
+          threshold: typeof row.threshold === 'number' ? row.threshold : undefined,
+        })),
+      ]),
+    ),
   }
 }
 
@@ -625,6 +663,33 @@ export async function fetchWorkflowRunCompare(workflowId: string, runIds?: strin
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiRunCompare>(`/workflows/${workflowId}/observability/compare${suffix}`)
   return toRunCompare(data)
+}
+
+export async function fetchWorkflowTrends(
+  workflowId: string,
+  params?: {
+    metrics?: string[]
+    windowSize?: number
+    useTemplate?: boolean
+    profile?: string
+    p95NodeDurationMs?: number
+    failedNodes?: number
+    warnLogs?: number
+    errorLogs?: number
+  },
+) {
+  const query = new URLSearchParams()
+  if (params?.metrics && params.metrics.length > 0) query.set('metrics', params.metrics.join(','))
+  if (params?.windowSize) query.set('window_size', String(params.windowSize))
+  if (typeof params?.useTemplate === 'boolean') query.set('use_template', String(params.useTemplate))
+  if (params?.profile) query.set('profile', params.profile)
+  if (params?.p95NodeDurationMs) query.set('p95_node_duration_ms', String(params.p95NodeDurationMs))
+  if (typeof params?.failedNodes === 'number') query.set('failed_nodes', String(params.failedNodes))
+  if (typeof params?.warnLogs === 'number') query.set('warn_logs', String(params.warnLogs))
+  if (typeof params?.errorLogs === 'number') query.set('error_logs', String(params.errorLogs))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiWorkflowTrends>(`/workflows/${workflowId}/observability/trends${suffix}`)
+  return toWorkflowTrends(data)
 }
 
 export async function fetchWorkflowSloView(

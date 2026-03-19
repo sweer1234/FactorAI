@@ -4,16 +4,24 @@ import {
   fetchWorkflowRunCompare,
   fetchWorkflowSloTemplate,
   fetchWorkflowSloView,
+  fetchWorkflowTrends,
   updateWorkflowSloConfig,
 } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { RunCompare, SloTemplate, SloView } from '../types'
+import type { RunCompare, SloTemplate, SloView, WorkflowTrends } from '../types'
 
 const TREND_DEFINITIONS = [
   { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
   { key: 'failed_nodes', label: '失败节点数', color: '#ff8a96' },
   { key: 'warn_logs', label: 'WARN 日志数', color: '#ffc06f' },
 ] as const
+const TREND_LABELS: Record<string, string> = {
+  p95_node_duration_ms: 'P95 节点耗时',
+  failed_nodes: '失败节点数',
+  warn_logs: 'WARN 日志数',
+  error_logs: 'ERROR 日志数',
+  total_duration_ms: '总耗时',
+}
 
 const SLO_PROFILE_OPTIONS = ['auto', 'default', 'ml_relaxed', 'competition', 'backtest_strict', 'offline_teaching']
 
@@ -32,6 +40,8 @@ export function ReportsPage() {
   const [runCompare, setRunCompare] = useState<RunCompare | null>(null)
   const [sloView, setSloView] = useState<SloView | null>(null)
   const [sloTemplate, setSloTemplate] = useState<SloTemplate | null>(null)
+  const [workflowTrends, setWorkflowTrends] = useState<WorkflowTrends | null>(null)
+  const [selectedTrendMetric, setSelectedTrendMetric] = useState('p95_node_duration_ms')
   const [sloProfile, setSloProfile] = useState('auto')
   const [sloThresholds, setSloThresholds] = useState({
     p95_node_duration_ms: 800,
@@ -51,14 +61,20 @@ export function ReportsPage() {
     const runIds = workflowRuns.map((item) => item.id)
     const load = async () => {
       try {
-        const [compare, slo, template] = await Promise.all([
+        const [compare, slo, template, trends] = await Promise.all([
           fetchWorkflowRunCompare(workflow.id, runIds),
           fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
           fetchWorkflowSloTemplate(workflow.id),
+          fetchWorkflowTrends(workflow.id, {
+            metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+            windowSize: 30,
+            useTemplate: true,
+          }),
         ])
         setRunCompare(compare)
         setSloView(slo)
         setSloTemplate(template)
+        setWorkflowTrends(trends)
         setSloProfile(template.profile || 'auto')
         setSloThresholds({
           p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
@@ -70,6 +86,7 @@ export function ReportsPage() {
         setRunCompare(null)
         setSloView(null)
         setSloTemplate(null)
+        setWorkflowTrends(null)
       }
     }
     void load()
@@ -91,35 +108,66 @@ export function ReportsPage() {
       setSloTemplate(template)
       const slo = await fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true })
       setSloView(slo)
+      const trends = await fetchWorkflowTrends(workflow.id, {
+        metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+        windowSize: 30,
+        useTemplate: true,
+      })
+      setWorkflowTrends(trends)
     } finally {
       setSavingSlo(false)
     }
   }
 
-  const trendSeries = useMemo(() => {
-    if (!runCompare || runCompare.runIds.length === 0) return []
-    return TREND_DEFINITIONS.map((def) => {
-      const values = runCompare.runIds.map((runId) => {
-        const raw = runCompare.metrics[runId]?.[def.key]
-        const num = Number(raw ?? 0)
-        return Number.isFinite(num) ? num : 0
+  useEffect(() => {
+    if (!workflowTrends?.metrics?.length) return
+    if (!workflowTrends.metrics.includes(selectedTrendMetric)) {
+      setSelectedTrendMetric(workflowTrends.metrics[0])
+    }
+  }, [workflowTrends, selectedTrendMetric])
+
+  const selectedTrend = useMemo(() => {
+    if (!workflowTrends) return null
+    const rows = workflowTrends.points[selectedTrendMetric] ?? []
+    if (rows.length === 0) return null
+    const values = rows.map((item) => Number(item.value ?? 0))
+    const threshold = Number(rows[0]?.threshold ?? workflowTrends.thresholds[selectedTrendMetric] ?? 0)
+    const max = Math.max(...values, threshold, 1)
+    const min = Math.min(...values, 0)
+    const points = rows
+      .map((item, idx) => {
+        const x = rows.length <= 1 ? 50 : (idx / (rows.length - 1)) * 100
+        const y = 90 - ((Number(item.value ?? 0) - min) / (max - min || 1)) * 74
+        return `${x},${y}`
       })
-      const max = Math.max(...values, 1)
-      const min = Math.min(...values, 0)
-      const points = values
-        .map((value, idx) => {
-          const x = runCompare.runIds.length <= 1 ? 50 : (idx / (runCompare.runIds.length - 1)) * 100
-          const y = 90 - ((value - min) / (max - min || 1)) * 72
-          return `${x},${y}`
-        })
-        .join(' ')
-      return {
-        ...def,
-        points,
-        latest: values[values.length - 1] ?? 0,
-      }
-    })
-  }, [runCompare])
+      .join(' ')
+    const thresholdY = 90 - ((threshold - min) / (max - min || 1)) * 74
+    return {
+      rows,
+      points,
+      threshold,
+      thresholdY,
+      latest: Number(rows[rows.length - 1]?.value ?? 0),
+    }
+  }, [workflowTrends, selectedTrendMetric])
+
+  const exportTrendCsv = () => {
+    if (!selectedTrend) return
+    const lines = [
+      'run_id,created_at,status,value,threshold',
+      ...selectedTrend.rows.map(
+        (item) =>
+          `${item.runId},${item.createdAt},${item.status},${Number(item.value ?? 0)},${Number(item.threshold ?? selectedTrend.threshold)}`,
+      ),
+    ]
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${workflow?.id ?? 'workflow'}-${selectedTrendMetric}-trend.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   const metricTrendCards = useMemo(() => {
     if (!runCompare || runCompare.runIds.length === 0) return []
@@ -347,24 +395,37 @@ export function ReportsPage() {
 
       <section className="panel">
         <div className="panel-header">
-          <h3>多 Run 趋势图（折线）</h3>
-          <span className="tag">{runCompare?.runIds.length ?? 0} runs</span>
+          <h3>时间序列趋势（按 Run）</h3>
+          <div className="header-actions">
+            <select value={selectedTrendMetric} onChange={(event) => setSelectedTrendMetric(event.target.value)}>
+              {(workflowTrends?.metrics ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {TREND_LABELS[item] ?? item}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="primary ghost mini" onClick={exportTrendCsv} disabled={!selectedTrend}>
+              导出 CSV
+            </button>
+          </div>
         </div>
-        {trendSeries.length > 0 ? (
+        {selectedTrend ? (
           <>
-            <div className="trend-legends">
-              {trendSeries.map((item) => (
-                <div key={item.key} className="trend-legend">
-                  <span className="dot" style={{ background: item.color }} />
-                  <strong>{item.label}</strong>
-                  <em>{item.latest.toFixed(0)}</em>
-                </div>
-              ))}
+            <div className="trend-legend">
+              <strong>{TREND_LABELS[selectedTrendMetric] ?? selectedTrendMetric}</strong>
+              <em>
+                当前 {selectedTrend.latest.toFixed(0)} / 阈值 {selectedTrend.threshold.toFixed(0)}
+              </em>
             </div>
-            <svg viewBox="0 0 100 100" className="line-chart trend-chart" role="img" aria-label="multi run trends">
-              {trendSeries.map((item) => (
-                <polyline key={item.key} points={item.points} style={{ stroke: item.color }} />
-              ))}
+            <svg viewBox="0 0 100 100" className="line-chart trend-time-chart" role="img" aria-label="selected metric trend">
+              <line
+                x1="0"
+                y1={String(selectedTrend.thresholdY)}
+                x2="100"
+                y2={String(selectedTrend.thresholdY)}
+                className="threshold-line"
+              />
+              <polyline points={selectedTrend.points} />
             </svg>
             <div className="trend-metric-grid">
               {metricTrendCards.map((item) => (
@@ -390,7 +451,7 @@ export function ReportsPage() {
             </div>
           </>
         ) : (
-          <p className="muted">暂无趋势数据</p>
+          <p className="muted">暂无时间序列趋势数据</p>
         )}
       </section>
 

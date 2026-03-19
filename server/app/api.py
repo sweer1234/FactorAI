@@ -37,10 +37,12 @@ from .schemas import (
     SLOConfigUpdateRequest,
     SLOTemplateRead,
     SLOViewRead,
+    TrendPointRead,
     RunLogRead,
     RunObservabilityRead,
     RunRead,
     TemplateRead,
+    WorkflowTrendRead,
     WorkflowCreate,
     WorkflowRead,
 )
@@ -972,6 +974,78 @@ def compare_workflow_runs(
         }
 
     return RunCompareRead(workflow_id=workflow_id, run_ids=[item.id for item in rows], metrics=metrics)
+
+
+@router.get("/workflows/{workflow_id}/observability/trends", response_model=WorkflowTrendRead)
+def get_workflow_observability_trends(
+    workflow_id: str,
+    metrics: str | None = Query(default=None, description="逗号分隔指标名"),
+    window_size: int = Query(default=30, ge=1, le=300),
+    use_template: bool = Query(default=True),
+    profile: str | None = Query(default=None),
+    p95_node_duration_ms: int | None = Query(default=None, ge=1),
+    failed_nodes: int | None = Query(default=None, ge=0),
+    warn_logs: int | None = Query(default=None, ge=0),
+    error_logs: int | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+
+    default_metrics = [
+        "p95_node_duration_ms",
+        "failed_nodes",
+        "warn_logs",
+        "error_logs",
+        "total_duration_ms",
+    ]
+    selected_metrics = [item.strip() for item in (metrics or "").split(",") if item.strip()] or default_metrics
+    rows = list(
+        session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
+    )[:window_size]
+    rows = sorted(rows, key=lambda item: item.created_at)
+    thresholds = _resolve_slo_thresholds(
+        workflow,
+        use_template=use_template,
+        profile=profile,
+        overrides={
+            "p95_node_duration_ms": p95_node_duration_ms,
+            "failed_nodes": failed_nodes,
+            "warn_logs": warn_logs,
+            "error_logs": error_logs,
+        },
+    )
+
+    points: dict[str, list[TrendPointRead]] = {}
+    for metric_name in selected_metrics:
+        metric_points: list[TrendPointRead] = []
+        for row in rows:
+            summary = row.observability or {}
+            raw_value = summary.get(metric_name, 0)
+            try:
+                value = float(raw_value or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            threshold = float(thresholds.get(metric_name)) if metric_name in thresholds else None
+            metric_points.append(
+                TrendPointRead(
+                    run_id=row.id,
+                    created_at=row.created_at.isoformat(),
+                    status=row.status,
+                    value=value,
+                    threshold=threshold,
+                )
+            )
+        points[metric_name] = metric_points
+
+    return WorkflowTrendRead(
+        workflow_id=workflow_id,
+        metrics=selected_metrics,
+        run_ids=[item.id for item in rows],
+        thresholds=thresholds,
+        points=points,
+    )
 
 
 @router.get("/workflows/{workflow_id}/observability/slo", response_model=SLOViewRead)

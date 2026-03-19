@@ -208,6 +208,22 @@ export interface RunCompare {
   metrics: Record<string, Record<string, string | number | boolean | null>>
 }
 
+export interface TrendPoint {
+  runId: string
+  createdAt: string
+  status: string
+  value: number
+  threshold?: number
+}
+
+export interface WorkflowTrends {
+  workflowId: string
+  metrics: string[]
+  runIds: string[]
+  thresholds: Record<string, number>
+  points: Record<string, TrendPoint[]>
+}
+
 export interface SloView {
   workflowId: string
   windowSize: number
