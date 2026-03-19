@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from pathlib import Path
 import uuid
 
@@ -330,6 +331,7 @@ async def upload_artifact(
     save_path = Path(settings.artifact_dir) / f"{artifact_id}{suffix}"
     content = await file.read()
     save_path.write_bytes(content)
+    sha256 = hashlib.sha256(content).hexdigest()
 
     row = UploadedArtifact(
         id=artifact_id,
@@ -337,6 +339,8 @@ async def upload_artifact(
         kind=kind,
         file_name=file.filename,
         file_size=len(content),
+        content_type=file.content_type,
+        sha256=sha256,
         file_path=str(save_path),
         created_at=datetime.utcnow(),
     )
@@ -349,6 +353,8 @@ async def upload_artifact(
         kind=row.kind,
         file_name=row.file_name,
         file_size=row.file_size,
+        content_type=row.content_type,
+        sha256=row.sha256,
         created_at=row.created_at,
     )
 
@@ -372,10 +378,29 @@ def list_artifacts(
             kind=row.kind,
             file_name=row.file_name,
             file_size=row.file_size,
+            content_type=row.content_type,
+            sha256=row.sha256,
             created_at=row.created_at,
         )
         for row in rows
     ]
+
+
+@router.get("/artifacts/{artifact_id}", response_model=ArtifactRead)
+def get_artifact(artifact_id: str, session: Session = Depends(get_session)):
+    row = session.get(UploadedArtifact, artifact_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return ArtifactRead(
+        id=row.id,
+        workflow_id=row.workflow_id,
+        kind=row.kind,
+        file_name=row.file_name,
+        file_size=row.file_size,
+        content_type=row.content_type,
+        sha256=row.sha256,
+        created_at=row.created_at,
+    )
 
 
 @router.get("/artifacts/{artifact_id}/download")

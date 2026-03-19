@@ -249,6 +249,7 @@ export function EditorPage() {
 
   const selectedNode = nodes.find((item) => item.id === currentSelectedNodeId)
   const selectedParams = selectedNode?.data?.params ?? {}
+  const selectedNodeSpecId = selectedNode?.data?.nodeSpecId
 
   const updateParam = (key: string, value: string | number | boolean) => {
     if (!currentSelectedNodeId) return
@@ -268,11 +269,34 @@ export function EditorPage() {
   }
 
   const onUploadClicked = () => fileRef.current?.click()
+  const bindArtifactToSelected = (artifactId: string, fileName: string) => {
+    if (!selectedNodeSpecId) {
+      setEditorNotice('请先选择一个节点')
+      return
+    }
+    if (selectedNodeSpecId === 'basic.model_upload') {
+      updateParam('artifactId', artifactId)
+      updateParam('path', fileName)
+      setEditorNotice(`已绑定模型制品：${fileName}`)
+      return
+    }
+    if (selectedNodeSpecId === 'offline.alphagen_upload') {
+      updateParam('artifactId', artifactId)
+      updateParam('artifact_path', fileName)
+      setEditorNotice(`已绑定 AlphaGen 制品：${fileName}`)
+      return
+    }
+    setEditorNotice('当前节点非上传类节点，未自动绑定')
+  }
+
   const onUploadSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file || !workflow) return
     try {
-      await uploadArtifactForWorkflow(workflow.id, file, 'node-input')
+      const artifact = await uploadArtifactForWorkflow(workflow.id, file, 'node-input')
+      if (artifact) {
+        bindArtifactToSelected(artifact.id, artifact.fileName)
+      }
       setEditorNotice(`上传成功：${file.name}`)
     } catch {
       setEditorNotice(`上传失败：${file.name}`)
@@ -369,6 +393,9 @@ export function EditorPage() {
                   <p className="muted">
                     {item.kind} · {(item.fileSize / 1024).toFixed(1)} KB
                   </p>
+                  <button type="button" className="primary ghost mini" onClick={() => bindArtifactToSelected(item.id, item.fileName)}>
+                    绑定到当前节点
+                  </button>
                 </div>
               ))}
               {artifacts.length === 0 ? <p className="muted">暂无上传文件</p> : null}
@@ -495,6 +522,18 @@ export function EditorPage() {
                         {(param.options ?? []).map((option) => (
                           <option key={option} value={option}>
                             {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : param.key === 'artifactId' ? (
+                      <select
+                        value={String(selectedParams[param.key] ?? param.defaultValue ?? '')}
+                        onChange={(event) => updateParam(param.key, event.target.value)}
+                      >
+                        <option value="">未绑定</option>
+                        {artifacts.map((artifact) => (
+                          <option key={artifact.id} value={artifact.id}>
+                            {artifact.fileName} ({artifact.id})
                           </option>
                         ))}
                       </select>

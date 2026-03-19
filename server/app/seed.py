@@ -16,49 +16,69 @@ def _dt(text: str | None) -> datetime | None:
 
 
 def _seed_node_specs(session: Session) -> None:
-    existing_ids = set(session.exec(select(NodeSpec.id)).all())
+    existing_rows = {row.id: row for row in session.exec(select(NodeSpec)).all()}
     for row in NODE_LIBRARY_CATALOG:
-        if row["id"] in existing_ids:
-            continue
-        session.add(
-            NodeSpec(
-                id=row["id"],
-                name=row["name"],
-                category=row["category"],
-                description=row["description"],
-                inputs=row["inputs"],
-                outputs=row["outputs"],
-                params=row["params"],
-                doc=row.get("doc", {}),
-                runtime=row.get("runtime", {}),
-                updated_at=datetime.utcnow(),
+        existing = existing_rows.get(row["id"])
+        if existing is None:
+            session.add(
+                NodeSpec(
+                    id=row["id"],
+                    name=row["name"],
+                    category=row["category"],
+                    description=row["description"],
+                    inputs=row["inputs"],
+                    outputs=row["outputs"],
+                    params=row["params"],
+                    doc=row.get("doc", {}),
+                    runtime=row.get("runtime", {}),
+                    updated_at=datetime.utcnow(),
+                )
             )
-        )
+            continue
+        existing.name = row["name"]
+        existing.category = row["category"]
+        existing.description = row["description"]
+        existing.inputs = row["inputs"]
+        existing.outputs = row["outputs"]
+        existing.params = row["params"]
+        existing.doc = row.get("doc", {})
+        existing.runtime = row.get("runtime", {})
+        existing.updated_at = datetime.utcnow()
+        session.add(existing)
     session.commit()
 
 
 def _seed_templates(session: Session) -> None:
-    existing_ids = set(session.exec(select(Template.id)).all())
+    existing_rows = {row.id: row for row in session.exec(select(Template)).all()}
     existing_version_pairs = {
         (row[0], row[1])
         for row in session.exec(select(TemplateVersion.template_id, TemplateVersion.version)).all()
     }
 
     for row in TEMPLATE_CATALOG:
-        if row["id"] in existing_ids:
-            continue
         updated_at = _dt(row["updated_at"]) or datetime.utcnow()
-        template = Template(
-            id=row["id"],
-            name=row["name"],
-            description=row["description"],
-            tags=row["tags"],
-            updated_at=updated_at,
-            category=row["category"],
-            official=row.get("official", True),
-            template_group=row.get("template_group", "官方模板"),
-            graph=row["graph"],
-        )
+        template = existing_rows.get(row["id"])
+        if template is None:
+            template = Template(
+                id=row["id"],
+                name=row["name"],
+                description=row["description"],
+                tags=row["tags"],
+                updated_at=updated_at,
+                category=row["category"],
+                official=row.get("official", True),
+                template_group=row.get("template_group", "官方模板"),
+                graph=row["graph"],
+            )
+        else:
+            template.name = row["name"]
+            template.description = row["description"]
+            template.tags = row["tags"]
+            template.updated_at = updated_at
+            template.category = row["category"]
+            template.official = row.get("official", True)
+            template.template_group = row.get("template_group", "官方模板")
+            template.graph = row["graph"]
         session.add(template)
         if (template.id, "1.0.0") not in existing_version_pairs:
             session.add(

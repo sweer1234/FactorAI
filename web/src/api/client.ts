@@ -87,6 +87,8 @@ interface ApiArtifact {
   kind: string
   file_name: string
   file_size: number
+  content_type?: string | null
+  sha256?: string | null
   created_at: string
 }
 
@@ -167,6 +169,8 @@ function toArtifact(item: ApiArtifact): Artifact {
     kind: item.kind,
     fileName: item.file_name,
     fileSize: item.file_size,
+    contentType: item.content_type ?? undefined,
+    sha256: item.sha256 ?? undefined,
     createdAt: item.created_at,
   }
 }

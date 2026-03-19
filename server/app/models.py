@@ -100,6 +100,8 @@ class UploadedArtifact(SQLModel, table=True):
     kind: str = Field(default="generic", index=True)
     file_name: str
     file_size: int = Field(default=0)
+    content_type: str | None = None
+    sha256: str | None = Field(default=None, index=True)
     file_path: str
     created_at: datetime = Field(default_factory=now_utc)
 

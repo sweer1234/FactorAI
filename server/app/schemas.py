@@ -125,4 +125,6 @@ class ArtifactRead(BaseModel):
     kind: str
     file_name: str
     file_size: int
+    content_type: str | None = None
+    sha256: str | None = None
     created_at: datetime

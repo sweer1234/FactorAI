@@ -117,6 +117,8 @@ export interface Artifact {
   kind: string
   fileName: string
   fileSize: number
+  contentType?: string
+  sha256?: string
   createdAt: string
 }
 

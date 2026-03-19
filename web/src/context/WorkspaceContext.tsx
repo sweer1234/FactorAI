@@ -64,7 +64,7 @@ export interface WorkspaceStore {
   getReportByWorkflowId: (workflowId: string) => ReportSnapshot | undefined
   refreshExecutionByWorkflowId: (workflowId: string) => Promise<void>
   refreshArtifactsByWorkflowId: (workflowId: string) => Promise<void>
-  uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<void>
+  uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<Artifact | null>
   notice: string | null
 }
 
@@ -277,11 +277,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const uploadArtifactForWorkflow = async (workflowId: string, file: File, kind = 'generic') => {
     if (!backendOnline) {
       updateNotice('后端未连接，无法上传')
-      return
+      return null
     }
-    await uploadArtifact({ workflowId, file, kind })
+    const artifact = await uploadArtifact({ workflowId, file, kind })
     await refreshArtifactsByWorkflowId(workflowId)
     updateNotice(`上传完成：${file.name}`)
+    return artifact
   }
 
   const value: WorkspaceStore = {

@@ -37,6 +37,13 @@ def _apply_lightweight_migrations() -> None:
         if _table_exists(conn, "run") and not _column_exists(conn, "run", "updated_at"):
             conn.execute(text("ALTER TABLE run ADD COLUMN updated_at DATETIME"))
 
+        # uploadedartifact 表新增字段
+        if _table_exists(conn, "uploadedartifact"):
+            if not _column_exists(conn, "uploadedartifact", "content_type"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN content_type TEXT"))
+            if not _column_exists(conn, "uploadedartifact", "sha256"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN sha256 TEXT"))
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)

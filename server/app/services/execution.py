@@ -9,7 +9,7 @@ import networkx as nx
 from sqlmodel import Session, select
 
 from ..db import engine
-from ..models import NodeSpec, Report, Run, RunLog, Workflow, WorkflowNodeState
+from ..models import NodeSpec, Report, Run, RunLog, UploadedArtifact, Workflow, WorkflowNodeState
 from .node_handlers import RunContext, execute_node, handle_backtest
 
 
@@ -247,6 +247,33 @@ def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict
     return warnings
 
 
+def _resolve_artifact_params(session: Session, workflow_id: str, node_payload: dict) -> tuple[dict, list[str]]:
+    params = dict(node_payload.get("params") or {})
+    warnings: list[str] = []
+    artifact_id = params.get("artifactId") or params.get("artifact_id")
+    if not artifact_id:
+        return params, warnings
+
+    artifact = session.get(UploadedArtifact, str(artifact_id))
+    if artifact is None:
+        warnings.append(f"节点 {node_payload.get('label', node_payload.get('id'))} 绑定的制品不存在: {artifact_id}")
+        return params, warnings
+    if artifact.workflow_id and artifact.workflow_id != workflow_id:
+        warnings.append(
+            f"节点 {node_payload.get('label', node_payload.get('id'))} 绑定了其他工作流制品 {artifact_id}，已忽略绑定"
+        )
+        return params, warnings
+
+    params["artifactId"] = artifact.id
+    params["artifactName"] = artifact.file_name
+    params["artifactPath"] = artifact.file_path
+    if "path" in params or "model_upload" in str(node_payload.get("nodeSpecId", "")):
+        params["path"] = artifact.file_path
+    if "artifact_path" in params:
+        params["artifact_path"] = artifact.file_path
+    return params, warnings
+
+
 def execute_run(run_id: str, workflow_id: str) -> None:
     started = time.time()
     with Session(engine) as session:
@@ -277,6 +304,8 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                 node_payload = nodes_payload.get(node_id, {"id": node_id, "label": labels.get(node_id, node_id), "params": {}})
                 node_name = node_payload.get("label", labels.get(node_id, node_id))
                 node_spec = nodespec_map.get(node_payload.get("nodeSpecId", ""))
+                resolved_params, resolve_warnings = _resolve_artifact_params(session, workflow_id, node_payload)
+                node_payload = {**node_payload, "params": resolved_params}
                 node_started = datetime.utcnow()
                 _upsert_node_state(
                     run_id,
@@ -289,10 +318,14 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                 )
                 _update_run(run_id, status="running", message=f"执行中: {node_name}")
                 _append_run_log(run_id, workflow_id, level="INFO", message=f"开始执行节点 {node_name}", node_id=node_id, node_name=node_name)
+                for item in resolve_warnings:
+                    _append_run_log(run_id, workflow_id, level="WARN", message=item, node_id=node_id, node_name=node_name)
 
                 start_node_ts = time.time()
-                execute_node(node_payload, node_spec, ctx)
+                node_warnings = execute_node(node_payload, node_spec, ctx)
                 node_cost_ms = int((time.time() - start_node_ts) * 1000)
+                for item in node_warnings:
+                    _append_run_log(run_id, workflow_id, level="WARN", message=item, node_id=node_id, node_name=node_name)
 
                 _upsert_node_state(
                     run_id,

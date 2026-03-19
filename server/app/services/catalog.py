@@ -79,7 +79,11 @@ NODE_LIBRARY_CATALOG: list[dict[str, Any]] = [
         description="上传已训练模型并注入当前工作流。",
         inputs=[],
         outputs=["model_obj"],
-        params=[{"key": "path", "type": "string", "defaultValue": "models/model.pkl"}],
+        params=[
+            {"key": "artifactId", "type": "string", "defaultValue": ""},
+            {"key": "path", "type": "string", "defaultValue": "models/model.pkl"},
+            {"key": "strict_inputs", "type": "boolean", "defaultValue": False},
+        ],
     ),
     make_node_spec(
         node_id="basic.loop_control",
@@ -452,7 +456,11 @@ NODE_LIBRARY_CATALOG: list[dict[str, Any]] = [
         description="上传 AlphaGen 生成的模型或表达式产物。",
         inputs=[],
         outputs=["alphagen_obj"],
-        params=[{"key": "artifact_path", "type": "string", "defaultValue": "alphagen/model.bin"}],
+        params=[
+            {"key": "artifactId", "type": "string", "defaultValue": ""},
+            {"key": "artifact_path", "type": "string", "defaultValue": "alphagen/model.bin"},
+            {"key": "strict_inputs", "type": "boolean", "defaultValue": False},
+        ],
     ),
     make_node_spec(
         node_id="offline.formula_transform",
