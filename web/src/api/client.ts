@@ -1,10 +1,14 @@
 import type {
   Artifact,
+  ContractCompileResult,
+  ContractFixSuggestion,
   NodeState,
   NodeDefinition,
   ReportSnapshot,
   RunLog,
   RunRecord,
+  RunCompare,
+  SloView,
   Template,
   Workflow,
   WorkflowGraph,
@@ -46,6 +50,7 @@ interface ApiRun {
   created_at: string
   message: string
   logs: string[]
+  observability?: Record<string, string | number | boolean | null | object | unknown[]>
 }
 
 interface ApiRunLog {
@@ -55,6 +60,8 @@ interface ApiRunLog {
   level: string
   node_id?: string | null
   node_name?: string | null
+  error_code?: string | null
+  detail?: Record<string, string | number | boolean | null | object | unknown[]> | null
   message: string
   created_at: string
 }
@@ -69,6 +76,7 @@ interface ApiNodeState {
   started_at?: string | null
   finished_at?: string | null
   duration_ms: number
+  error_code?: string | null
   message: string
 }
 
@@ -95,6 +103,50 @@ interface ApiArtifact {
   sha256?: string | null
   audit?: Record<string, string | number | boolean | null> | null
   created_at: string
+}
+
+interface ApiContractIssue {
+  code: string
+  message: string
+  node_id?: string
+  edge_id?: string
+  detail?: Record<string, unknown>
+}
+
+interface ApiContractFixSuggestion {
+  issue_code: string
+  priority: string
+  title: string
+  message: string
+  proposed_action: string
+  patch: Record<string, unknown>
+}
+
+interface ApiContractCompile {
+  valid: boolean
+  strict: boolean
+  errors: ApiContractIssue[]
+  warnings: ApiContractIssue[]
+  suggestions: ApiContractFixSuggestion[]
+  node_input_schemas: Record<string, Record<string, Record<string, unknown>>>
+  node_output_schemas: Record<string, Record<string, Record<string, unknown>>>
+  compiled_at: string
+}
+
+interface ApiRunCompare {
+  workflow_id: string
+  run_ids: string[]
+  metrics: Record<string, Record<string, string | number | boolean | null>>
+}
+
+interface ApiSloView {
+  workflow_id: string
+  window_size: number
+  thresholds: Record<string, number>
+  pass_rate: number
+  pass_count: number
+  fail_count: number
+  runs: Array<Record<string, string | number | boolean | null>>
 }
 
 function toWorkflow(item: ApiWorkflow): Workflow {
@@ -136,6 +188,7 @@ function toRun(item: ApiRun): RunRecord {
     createdAt: item.created_at,
     message: item.message,
     logs: item.logs,
+    observability: item.observability ?? undefined,
   }
 }
 
@@ -147,6 +200,8 @@ function toRunLog(item: ApiRunLog): RunLog {
     level: item.level,
     nodeId: item.node_id ?? undefined,
     nodeName: item.node_name ?? undefined,
+    errorCode: item.error_code ?? undefined,
+    detail: item.detail ?? undefined,
     message: item.message,
     createdAt: item.created_at,
   }
@@ -163,6 +218,7 @@ function toNodeState(item: ApiNodeState): NodeState {
     startedAt: item.started_at ?? undefined,
     finishedAt: item.finished_at ?? undefined,
     durationMs: item.duration_ms,
+    errorCode: item.error_code ?? undefined,
     message: item.message,
   }
 }
@@ -182,6 +238,60 @@ function toArtifact(item: ApiArtifact): Artifact {
     sha256: item.sha256 ?? undefined,
     audit: item.audit ?? undefined,
     createdAt: item.created_at,
+  }
+}
+
+function toContractIssue(item: ApiContractIssue) {
+  return {
+    code: item.code,
+    message: item.message,
+    nodeId: item.node_id ?? undefined,
+    edgeId: item.edge_id ?? undefined,
+    detail: (item.detail as Record<string, unknown>) ?? {},
+  }
+}
+
+function toContractFixSuggestion(item: ApiContractFixSuggestion): ContractFixSuggestion {
+  return {
+    issueCode: item.issue_code,
+    priority: item.priority,
+    title: item.title,
+    message: item.message,
+    proposedAction: item.proposed_action,
+    patch: item.patch as Record<string, string | number | boolean | null | object | unknown[]>,
+  }
+}
+
+function toContractCompile(item: ApiContractCompile): ContractCompileResult {
+  return {
+    valid: item.valid,
+    strict: item.strict,
+    errors: item.errors.map(toContractIssue),
+    warnings: item.warnings.map(toContractIssue),
+    suggestions: item.suggestions.map(toContractFixSuggestion),
+    nodeInputSchemas: item.node_input_schemas,
+    nodeOutputSchemas: item.node_output_schemas,
+    compiledAt: item.compiled_at,
+  }
+}
+
+function toRunCompare(item: ApiRunCompare): RunCompare {
+  return {
+    workflowId: item.workflow_id,
+    runIds: item.run_ids,
+    metrics: item.metrics,
+  }
+}
+
+function toSloView(item: ApiSloView): SloView {
+  return {
+    workflowId: item.workflow_id,
+    windowSize: item.window_size,
+    thresholds: item.thresholds,
+    passRate: item.pass_rate,
+    passCount: item.pass_count,
+    failCount: item.fail_count,
+    runs: item.runs,
   }
 }
 
@@ -276,6 +386,14 @@ export async function saveWorkflowGraph(workflowId: string, graph: WorkflowGraph
   return toWorkflow(data)
 }
 
+export async function saveWorkflowGraphStrict(workflowId: string, graph: WorkflowGraph) {
+  const data = await request<ApiWorkflow>(`/workflows/${workflowId}/graph?strict_contract=true`, {
+    method: 'PUT',
+    body: JSON.stringify({ graph }),
+  })
+  return toWorkflow(data)
+}
+
 export async function saveWorkflowDraft(workflowId: string) {
   const data = await request<ApiWorkflow>(`/workflows/${workflowId}/draft`, {
     method: 'POST',
@@ -353,6 +471,49 @@ export async function rollbackArtifact(artifactId: string, reason?: string) {
     body: JSON.stringify({ reason }),
   })
   return toArtifact(data)
+}
+
+export async function fetchWorkflowContractCompile(workflowId: string, strict = false) {
+  const data = await request<ApiContractCompile>(
+    `/workflows/${workflowId}/contract-compile?strict=${String(strict)}`,
+  )
+  return toContractCompile(data)
+}
+
+export async function fetchWorkflowContractFixSuggestions(workflowId: string, strict = false) {
+  const data = await request<ApiContractFixSuggestion[]>(
+    `/workflows/${workflowId}/contract-fix-suggestions?strict=${String(strict)}`,
+  )
+  return data.map(toContractFixSuggestion)
+}
+
+export async function fetchWorkflowRunCompare(workflowId: string, runIds?: string[]) {
+  const query = new URLSearchParams()
+  if (runIds && runIds.length > 0) query.set('run_ids', runIds.join(','))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiRunCompare>(`/workflows/${workflowId}/observability/compare${suffix}`)
+  return toRunCompare(data)
+}
+
+export async function fetchWorkflowSloView(
+  workflowId: string,
+  params?: {
+    windowSize?: number
+    p95NodeDurationMs?: number
+    failedNodes?: number
+    warnLogs?: number
+    errorLogs?: number
+  },
+) {
+  const query = new URLSearchParams()
+  if (params?.windowSize) query.set('window_size', String(params.windowSize))
+  if (params?.p95NodeDurationMs) query.set('p95_node_duration_ms', String(params.p95NodeDurationMs))
+  if (typeof params?.failedNodes === 'number') query.set('failed_nodes', String(params.failedNodes))
+  if (typeof params?.warnLogs === 'number') query.set('warn_logs', String(params.warnLogs))
+  if (typeof params?.errorLogs === 'number') query.set('error_logs', String(params.errorLogs))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiSloView>(`/workflows/${workflowId}/observability/slo${suffix}`)
+  return toSloView(data)
 }
 
 export async function fetchBootstrap() {

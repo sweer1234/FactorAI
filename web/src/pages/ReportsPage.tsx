@@ -1,14 +1,47 @@
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { fetchWorkflowRunCompare, fetchWorkflowSloView } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
+import type { RunCompare, SloView } from '../types'
+
+function pct(value: number) {
+  return `${(value * 100).toFixed(1)}%`
+}
 
 export function ReportsPage() {
   const { workflowId = '' } = useParams()
-  const { workflows, getReportByWorkflowId, runWorkflow } = useWorkspace()
+  const { workflows, runs, backendOnline, getReportByWorkflowId, runWorkflow } = useWorkspace()
   const workflow = workflows.find((item) => item.id === workflowId)
   const report = workflow ? getReportByWorkflowId(workflow.id) : undefined
   const equitySeries = report?.equitySeries ?? []
   const metrics = report?.metrics ?? []
   const layerReturn = report?.layerReturn ?? []
+  const [runCompare, setRunCompare] = useState<RunCompare | null>(null)
+  const [sloView, setSloView] = useState<SloView | null>(null)
+
+  const workflowRuns = useMemo(
+    () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
+    [runs, workflowId],
+  )
+
+  useEffect(() => {
+    if (!backendOnline || !workflow?.id) return
+    const runIds = workflowRuns.map((item) => item.id)
+    const load = async () => {
+      try {
+        const [compare, slo] = await Promise.all([
+          fetchWorkflowRunCompare(workflow.id, runIds),
+          fetchWorkflowSloView(workflow.id, { windowSize: 20, p95NodeDurationMs: 900 }),
+        ])
+        setRunCompare(compare)
+        setSloView(slo)
+      } catch {
+        setRunCompare(null)
+        setSloView(null)
+      }
+    }
+    void load()
+  }, [backendOnline, workflow?.id, workflowRuns])
 
   let equityPoints = ''
   if (equitySeries.length > 0) {
@@ -97,6 +130,79 @@ export function ReportsPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>SLO 视图（最近 20 次）</h3>
+          <span className="tag">{sloView ? pct(sloView.passRate) : '--'}</span>
+        </div>
+        {sloView ? (
+          <>
+            <div className="slo-kpis">
+              <article>
+                <span>通过次数</span>
+                <strong>{sloView.passCount}</strong>
+              </article>
+              <article>
+                <span>失败次数</span>
+                <strong>{sloView.failCount}</strong>
+              </article>
+              <article>
+                <span>阈值 P95</span>
+                <strong>{sloView.thresholds.p95_node_duration_ms}ms</strong>
+              </article>
+            </div>
+            <div className="slo-runs">
+              {sloView.runs.slice(-8).map((item) => (
+                <div key={String(item.run_id)} className={`slo-run ${item.slo_pass ? 'pass' : 'fail'}`}>
+                  <span>{String(item.run_id).slice(-6)}</span>
+                  <em>{item.slo_pass ? 'PASS' : 'FAIL'}</em>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无 SLO 数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>多 Run 对比（最近 8 次）</h3>
+          <span className="tag">{runCompare?.runIds.length ?? 0}</span>
+        </div>
+        {runCompare ? (
+          <div className="compare-table">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>状态</th>
+                  <th>P95(ms)</th>
+                  <th>失败节点</th>
+                  <th>WARN</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runCompare.runIds.map((runId) => {
+                  const item = runCompare.metrics[runId] ?? {}
+                  return (
+                    <tr key={runId}>
+                      <td>{runId.slice(-8)}</td>
+                      <td>{String(item.status ?? '--')}</td>
+                      <td>{String(item.p95_node_duration_ms ?? '--')}</td>
+                      <td>{String(item.failed_nodes ?? '--')}</td>
+                      <td>{String(item.warn_logs ?? '--')}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted">暂无对比数据</p>
+        )}
       </section>
     </div>
   )

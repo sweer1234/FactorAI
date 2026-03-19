@@ -85,6 +85,7 @@ export interface RunRecord {
   createdAt: string
   message: string
   logs?: string[]
+  observability?: Record<string, string | number | boolean | null | object | unknown[]>
 }
 
 export interface RunLog {
@@ -94,6 +95,8 @@ export interface RunLog {
   level: string
   nodeId?: string
   nodeName?: string
+  errorCode?: string
+  detail?: Record<string, string | number | boolean | null | unknown[] | object>
   message: string
   createdAt: string
 }
@@ -108,6 +111,7 @@ export interface NodeState {
   startedAt?: string
   finishedAt?: string
   durationMs: number
+  errorCode?: string
   message: string
 }
 
@@ -145,4 +149,48 @@ export interface ReportSnapshot {
   equitySeries: number[]
   layerReturn: LayerReturn[]
   updatedAt: string
+}
+
+export interface ContractIssue {
+  code: string
+  message: string
+  nodeId?: string
+  edgeId?: string
+  detail: Record<string, string | number | boolean | null | object | unknown[]>
+}
+
+export interface ContractFixSuggestion {
+  issueCode: string
+  priority: string
+  title: string
+  message: string
+  proposedAction: string
+  patch: Record<string, string | number | boolean | null | object | unknown[]>
+}
+
+export interface ContractCompileResult {
+  valid: boolean
+  strict: boolean
+  errors: ContractIssue[]
+  warnings: ContractIssue[]
+  suggestions: ContractFixSuggestion[]
+  nodeInputSchemas: Record<string, Record<string, Record<string, unknown>>>
+  nodeOutputSchemas: Record<string, Record<string, Record<string, unknown>>>
+  compiledAt: string
+}
+
+export interface RunCompare {
+  workflowId: string
+  runIds: string[]
+  metrics: Record<string, Record<string, string | number | boolean | null>>
+}
+
+export interface SloView {
+  workflowId: string
+  windowSize: number
+  thresholds: Record<string, number>
+  passRate: number
+  passCount: number
+  failCount: number
+  runs: Array<Record<string, string | number | boolean | null>>
 }

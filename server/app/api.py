@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 from pathlib import Path
+from typing import Any
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -16,13 +17,16 @@ from .schemas import (
     ArtifactRead,
     ArtifactRollbackRequest,
     ContractCompileRead,
+    ContractFixSuggestionRead,
     GraphUpdate,
     ContractIssueRead,
     NodeDefinitionRead,
     NodeStateRead,
     ReportRead,
     RunAlertsRead,
+    RunCompareRead,
     RunMetricPointRead,
+    SLOViewRead,
     RunLogRead,
     RunObservabilityRead,
     RunRead,
@@ -227,6 +231,7 @@ def update_workflow_graph(
             detail={
                 "message": "contract compile failed",
                 "errors": compile_result["errors"],
+                "suggestions": compile_result.get("suggestions", []),
             },
         )
     row.graph = payload.graph.model_dump()
@@ -264,10 +269,36 @@ def compile_workflow_contract_check(
         strict=result.get("strict", strict),
         errors=[ContractIssueRead(**item) for item in result.get("errors", [])],
         warnings=[ContractIssueRead(**item) for item in result.get("warnings", [])],
+        suggestions=[ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])],
         node_input_schemas=result.get("node_input_schemas", {}),
         node_output_schemas=result.get("node_output_schemas", {}),
         compiled_at=datetime.utcnow(),
     )
+
+
+@router.get("/workflows/{workflow_id}/contract-fix-suggestions", response_model=list[ContractFixSuggestionRead])
+def get_contract_fix_suggestions(
+    workflow_id: str,
+    strict: bool = Query(default=False),
+    session: Session = Depends(get_session),
+):
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    node_specs = list(session.exec(select(NodeSpec)))
+    nodespec_map = {
+        item.id: {
+            "id": item.id,
+            "name": item.name,
+            "category": item.category,
+            "inputs": item.inputs,
+            "outputs": item.outputs,
+            "params": item.params,
+        }
+        for item in node_specs
+    }
+    result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
+    return [ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])]
 
 
 @router.post("/workflows/{workflow_id}/draft", response_model=WorkflowRead)
@@ -485,6 +516,109 @@ def get_workflow_metric_series(
         )
         for row in rows
     ]
+
+
+@router.get("/workflows/{workflow_id}/observability/compare", response_model=RunCompareRead)
+def compare_workflow_runs(
+    workflow_id: str,
+    run_ids: str | None = Query(default=None, description="逗号分隔 run_id 列表；为空则自动取最近 5 次"),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    selected_ids = [item.strip() for item in (run_ids or "").split(",") if item.strip()]
+    if selected_ids:
+        runs = [session.get(Run, item) for item in selected_ids]
+        rows = [item for item in runs if item and item.workflow_id == workflow_id]
+    else:
+        rows = list(
+            session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
+        )[:5]
+    rows = sorted(rows, key=lambda item: item.created_at)
+
+    metrics: dict[str, dict[str, float | int | str | None]] = {}
+    for row in rows:
+        summary = row.observability or {}
+        metrics[row.id] = {
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+            "total_nodes": int(summary.get("total_nodes", 0)),
+            "failed_nodes": int(summary.get("failed_nodes", 0)),
+            "warn_logs": int(summary.get("warn_logs", 0)),
+            "error_logs": int(summary.get("error_logs", 0)),
+            "avg_node_duration_ms": int(summary.get("avg_node_duration_ms", 0)),
+            "p95_node_duration_ms": int(summary.get("p95_node_duration_ms", 0)),
+            "total_duration_ms": int(summary.get("total_duration_ms", 0)),
+        }
+
+    return RunCompareRead(workflow_id=workflow_id, run_ids=[item.id for item in rows], metrics=metrics)
+
+
+@router.get("/workflows/{workflow_id}/observability/slo", response_model=SLOViewRead)
+def get_workflow_slo_view(
+    workflow_id: str,
+    window_size: int = Query(default=20, ge=1, le=200),
+    p95_node_duration_ms: int = Query(default=800, ge=1),
+    failed_nodes: int = Query(default=0, ge=0),
+    warn_logs: int = Query(default=20, ge=0),
+    error_logs: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    rows = list(
+        session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
+    )[:window_size]
+    rows = sorted(rows, key=lambda item: item.created_at)
+    thresholds = {
+        "p95_node_duration_ms": p95_node_duration_ms,
+        "failed_nodes": failed_nodes,
+        "warn_logs": warn_logs,
+        "error_logs": error_logs,
+    }
+    run_views: list[dict[str, Any]] = []
+    pass_count = 0
+    for row in rows:
+        summary = row.observability or {}
+        p95 = int(summary.get("p95_node_duration_ms", 0))
+        failed = int(summary.get("failed_nodes", 0))
+        warns = int(summary.get("warn_logs", 0))
+        errors = int(summary.get("error_logs", 0))
+        ok = (
+            p95 <= p95_node_duration_ms
+            and failed <= failed_nodes
+            and warns <= warn_logs
+            and errors <= error_logs
+            and row.status == "success"
+        )
+        if ok:
+            pass_count += 1
+        run_views.append(
+            {
+                "run_id": row.id,
+                "status": row.status,
+                "created_at": row.created_at.isoformat(),
+                "p95_node_duration_ms": p95,
+                "failed_nodes": failed,
+                "warn_logs": warns,
+                "error_logs": errors,
+                "slo_pass": ok,
+            }
+        )
+    total = len(run_views)
+    fail_count = total - pass_count
+    pass_rate = (pass_count / total) if total else 0.0
+    return SLOViewRead(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        thresholds=thresholds,
+        pass_rate=pass_rate,
+        pass_count=pass_count,
+        fail_count=fail_count,
+        runs=run_views,
+    )
 
 
 @router.get("/reports/{workflow_id}", response_model=ReportRead | None)

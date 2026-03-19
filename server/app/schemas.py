@@ -174,11 +174,37 @@ class ContractIssueRead(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+class ContractFixSuggestionRead(BaseModel):
+    issue_code: str
+    priority: str
+    title: str
+    message: str
+    proposed_action: str
+    patch: dict[str, Any] = Field(default_factory=dict)
+
+
 class ContractCompileRead(BaseModel):
     valid: bool
     strict: bool
     errors: list[ContractIssueRead] = Field(default_factory=list)
     warnings: list[ContractIssueRead] = Field(default_factory=list)
+    suggestions: list[ContractFixSuggestionRead] = Field(default_factory=list)
     node_input_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     node_output_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     compiled_at: datetime
+
+
+class RunCompareRead(BaseModel):
+    workflow_id: str
+    run_ids: list[str] = Field(default_factory=list)
+    metrics: dict[str, dict[str, float | int | str | None]] = Field(default_factory=dict)
+
+
+class SLOViewRead(BaseModel):
+    workflow_id: str
+    window_size: int
+    thresholds: dict[str, int | float] = Field(default_factory=dict)
+    pass_rate: float
+    pass_count: int
+    fail_count: int
+    runs: list[dict[str, Any]] = Field(default_factory=list)
