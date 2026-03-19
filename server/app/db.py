@@ -34,8 +34,22 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE template ADD COLUMN created_at DATETIME"))
 
         # run 表新增字段
-        if _table_exists(conn, "run") and not _column_exists(conn, "run", "updated_at"):
-            conn.execute(text("ALTER TABLE run ADD COLUMN updated_at DATETIME"))
+        if _table_exists(conn, "run"):
+            if not _column_exists(conn, "run", "updated_at"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN updated_at DATETIME"))
+            if not _column_exists(conn, "run", "observability"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN observability JSON"))
+
+        # runlog 表新增字段
+        if _table_exists(conn, "runlog"):
+            if not _column_exists(conn, "runlog", "error_code"):
+                conn.execute(text("ALTER TABLE runlog ADD COLUMN error_code TEXT"))
+            if not _column_exists(conn, "runlog", "detail"):
+                conn.execute(text("ALTER TABLE runlog ADD COLUMN detail JSON"))
+
+        # workflownodestate 表新增字段
+        if _table_exists(conn, "workflownodestate") and not _column_exists(conn, "workflownodestate", "error_code"):
+            conn.execute(text("ALTER TABLE workflownodestate ADD COLUMN error_code TEXT"))
 
         # uploadedartifact 表新增字段
         if _table_exists(conn, "uploadedartifact"):
@@ -43,6 +57,14 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN content_type TEXT"))
             if not _column_exists(conn, "uploadedartifact", "sha256"):
                 conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN sha256 TEXT"))
+            if not _column_exists(conn, "uploadedartifact", "logical_key"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN logical_key TEXT DEFAULT 'default'"))
+            if not _column_exists(conn, "uploadedartifact", "version"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN version INTEGER DEFAULT 1"))
+            if not _column_exists(conn, "uploadedartifact", "is_active"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+            if not _column_exists(conn, "uploadedartifact", "parent_artifact_id"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN parent_artifact_id TEXT"))
 
 
 def init_db() -> None:

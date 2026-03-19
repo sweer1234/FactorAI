@@ -72,6 +72,7 @@ class RunRead(BaseModel):
     created_at: datetime
     message: str
     logs: list[str]
+    observability: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunLogRead(BaseModel):
@@ -81,6 +82,8 @@ class RunLogRead(BaseModel):
     level: str
     node_id: str | None = None
     node_name: str | None = None
+    error_code: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
     message: str
     created_at: datetime
 
@@ -95,6 +98,7 @@ class NodeStateRead(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_ms: int
+    error_code: str | None = None
     message: str
 
 
@@ -123,8 +127,22 @@ class ArtifactRead(BaseModel):
     id: str
     workflow_id: str | None = None
     kind: str
+    logical_key: str
+    version: int
+    is_active: bool
+    parent_artifact_id: str | None = None
     file_name: str
     file_size: int
     content_type: str | None = None
     sha256: str | None = None
     created_at: datetime
+
+
+class ArtifactRollbackRequest(BaseModel):
+    reason: str | None = None
+
+
+class RunObservabilityRead(BaseModel):
+    run_id: str
+    workflow_id: str
+    summary: dict[str, Any] = Field(default_factory=dict)

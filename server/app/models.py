@@ -67,6 +67,7 @@ class Run(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now_utc)
     message: str = Field(default="")
     logs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    observability: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     updated_at: datetime = Field(default_factory=now_utc)
 
 
@@ -77,6 +78,8 @@ class RunLog(SQLModel, table=True):
     level: str = Field(default="INFO")
     node_id: str | None = None
     node_name: str | None = None
+    error_code: str | None = Field(default=None, index=True)
+    detail: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     message: str
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -91,6 +94,7 @@ class WorkflowNodeState(SQLModel, table=True):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_ms: int = Field(default=0)
+    error_code: str | None = Field(default=None, index=True)
     message: str = Field(default="")
 
 
@@ -98,6 +102,10 @@ class UploadedArtifact(SQLModel, table=True):
     id: str = Field(primary_key=True, index=True)
     workflow_id: str | None = Field(default=None, index=True)
     kind: str = Field(default="generic", index=True)
+    logical_key: str = Field(default="default", index=True)
+    version: int = Field(default=1, index=True)
+    is_active: bool = Field(default=True, index=True)
+    parent_artifact_id: str | None = Field(default=None, index=True)
     file_name: str
     file_size: int = Field(default=0)
     content_type: str | None = None

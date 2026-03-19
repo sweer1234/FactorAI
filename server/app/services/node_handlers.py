@@ -98,11 +98,13 @@ def _rank_zscore(values: pd.Series) -> pd.Series:
     return (values - values.mean()) / std
 
 
-def _validate_node_inputs(node_name: str, node_spec: dict[str, Any] | None, params: dict[str, Any], ctx: RunContext) -> list[str]:
+def _validate_node_inputs(
+    node_name: str, node_spec: dict[str, Any] | None, params: dict[str, Any], ctx: RunContext
+) -> list[dict[str, Any]]:
     if not node_spec:
         return []
     strict = bool(params.get("strict_inputs") or params.get("strictInputs") or False)
-    warnings: list[str] = []
+    warnings: list[dict[str, Any]] = []
     missing: list[str] = []
 
     for port in node_spec.get("inputs", []):
@@ -128,14 +130,14 @@ def _validate_node_inputs(node_name: str, node_spec: dict[str, Any] | None, para
         if required_cols and not required_cols.issubset(set(frame.columns)):
             detail = f"{node_name} 输入 {port} 缺少字段 {sorted(required_cols - set(frame.columns))}"
             if strict:
-                raise ValueError(detail)
-            warnings.append(detail)
+                raise ValueError(f"E_NODE_INPUT_SCHEMA: {detail}")
+            warnings.append({"code": "W_NODE_INPUT_SCHEMA", "message": detail})
 
     if missing:
         detail = f"{node_name} 缺失输入端口: {', '.join(missing)}"
         if strict:
-            raise ValueError(detail)
-        warnings.append(f"{detail}，已尝试降级执行")
+            raise ValueError(f"E_NODE_INPUT_MISSING: {detail}")
+        warnings.append({"code": "W_NODE_INPUT_MISSING", "message": f"{detail}，已尝试降级执行"})
     return warnings
 
 
@@ -476,7 +478,7 @@ HANDLER_BY_SPEC_ID = {
 }
 
 
-def execute_node(node: dict[str, Any], node_spec: dict[str, Any] | None, ctx: RunContext) -> list[str]:
+def execute_node(node: dict[str, Any], node_spec: dict[str, Any] | None, ctx: RunContext) -> list[dict[str, Any]]:
     node_name = node.get("label", node.get("id", "node"))
     node_spec_id = node.get("nodeSpecId") or (node_spec or {}).get("id")
     params = node.get("params") or {}

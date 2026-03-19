@@ -14,17 +14,19 @@ from .db import get_session
 from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, Workflow
 from .schemas import (
     ArtifactRead,
+    ArtifactRollbackRequest,
     GraphUpdate,
     NodeDefinitionRead,
     NodeStateRead,
     ReportRead,
     RunLogRead,
+    RunObservabilityRead,
     RunRead,
     TemplateRead,
     WorkflowCreate,
     WorkflowRead,
 )
-from .services.execution import list_node_states, list_run_logs, list_runs, start_run
+from .services.execution import get_run_observability, list_node_states, list_run_logs, list_runs, start_run
 from .services.node_library import NODE_LIBRARY
 
 
@@ -70,6 +72,7 @@ def _run_to_read(row: Run) -> RunRead:
         created_at=row.created_at,
         message=row.message,
         logs=row.logs,
+        observability=row.observability or {},
     )
 
 
@@ -86,6 +89,23 @@ def _nodespec_to_read(row: NodeSpec | dict) -> NodeDefinitionRead:
         params=row.params,
         doc=row.doc,
         runtime=row.runtime,
+    )
+
+
+def _artifact_to_read(row: UploadedArtifact) -> ArtifactRead:
+    return ArtifactRead(
+        id=row.id,
+        workflow_id=row.workflow_id,
+        kind=row.kind,
+        logical_key=row.logical_key,
+        version=row.version,
+        is_active=row.is_active,
+        parent_artifact_id=row.parent_artifact_id,
+        file_name=row.file_name,
+        file_size=row.file_size,
+        content_type=row.content_type,
+        sha256=row.sha256,
+        created_at=row.created_at,
     )
 
 
@@ -272,6 +292,8 @@ def get_run_logs(run_id: str, session: Session = Depends(get_session)):
             level=row.level,
             node_id=row.node_id,
             node_name=row.node_name,
+            error_code=row.error_code,
+            detail=row.detail or {},
             message=row.message,
             created_at=row.created_at,
         )
@@ -296,10 +318,23 @@ def get_run_node_states(run_id: str, session: Session = Depends(get_session)):
             started_at=row.started_at,
             finished_at=row.finished_at,
             duration_ms=row.duration_ms,
+            error_code=row.error_code,
             message=row.message,
         )
         for row in rows
     ]
+
+
+@router.get("/runs/{run_id}/observability", response_model=RunObservabilityRead)
+def get_run_metrics(run_id: str, session: Session = Depends(get_session)):
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    return RunObservabilityRead(
+        run_id=run.id,
+        workflow_id=run.workflow_id,
+        summary=get_run_observability(session, run.id),
+    )
 
 
 @router.get("/reports/{workflow_id}", response_model=ReportRead | None)
@@ -321,6 +356,9 @@ def get_report(workflow_id: str, session: Session = Depends(get_session)):
 async def upload_artifact(
     file: UploadFile = File(...),
     kind: str = Form(default="generic"),
+    logical_key: str = Form(default="default"),
+    parent_artifact_id: str | None = Form(default=None),
+    activate: bool = Form(default=True),
     workflow_id: str | None = Form(default=None),
     session: Session = Depends(get_session),
 ):
@@ -332,11 +370,27 @@ async def upload_artifact(
     content = await file.read()
     save_path.write_bytes(content)
     sha256 = hashlib.sha256(content).hexdigest()
+    lk = (logical_key or "default").strip() or "default"
+
+    version_query = select(UploadedArtifact).where(
+        UploadedArtifact.kind == kind,
+        UploadedArtifact.logical_key == lk,
+    )
+    if workflow_id is None:
+        version_query = version_query.where(UploadedArtifact.workflow_id.is_(None))
+    else:
+        version_query = version_query.where(UploadedArtifact.workflow_id == workflow_id)
+    siblings = list(session.exec(version_query.order_by(UploadedArtifact.version.desc())))
+    next_version = (siblings[0].version + 1) if siblings else 1
 
     row = UploadedArtifact(
         id=artifact_id,
         workflow_id=workflow_id,
         kind=kind,
+        logical_key=lk,
+        version=next_version,
+        is_active=activate,
+        parent_artifact_id=parent_artifact_id,
         file_name=file.filename,
         file_size=len(content),
         content_type=file.content_type,
@@ -344,19 +398,15 @@ async def upload_artifact(
         file_path=str(save_path),
         created_at=datetime.utcnow(),
     )
+    if activate:
+        for item in siblings:
+            if item.is_active:
+                item.is_active = False
+                session.add(item)
     session.add(row)
     session.commit()
     session.refresh(row)
-    return ArtifactRead(
-        id=row.id,
-        workflow_id=row.workflow_id,
-        kind=row.kind,
-        file_name=row.file_name,
-        file_size=row.file_size,
-        content_type=row.content_type,
-        sha256=row.sha256,
-        created_at=row.created_at,
-    )
+    return _artifact_to_read(row)
 
 
 @router.get("/artifacts", response_model=list[ArtifactRead])
@@ -364,26 +414,24 @@ def list_artifacts(
     session: Session = Depends(get_session),
     workflow_id: str | None = Query(default=None),
     kind: str | None = Query(default=None),
+    logical_key: str | None = Query(default=None),
+    active_only: bool = Query(default=False),
 ):
-    query = select(UploadedArtifact).order_by(UploadedArtifact.created_at.desc())
+    query = select(UploadedArtifact).order_by(
+        UploadedArtifact.logical_key.asc(),
+        UploadedArtifact.version.desc(),
+        UploadedArtifact.created_at.desc(),
+    )
     if workflow_id:
         query = query.where(UploadedArtifact.workflow_id == workflow_id)
     if kind:
         query = query.where(UploadedArtifact.kind == kind)
+    if logical_key:
+        query = query.where(UploadedArtifact.logical_key == logical_key)
+    if active_only:
+        query = query.where(UploadedArtifact.is_active.is_(True))
     rows = list(session.exec(query))
-    return [
-        ArtifactRead(
-            id=row.id,
-            workflow_id=row.workflow_id,
-            kind=row.kind,
-            file_name=row.file_name,
-            file_size=row.file_size,
-            content_type=row.content_type,
-            sha256=row.sha256,
-            created_at=row.created_at,
-        )
-        for row in rows
-    ]
+    return [_artifact_to_read(row) for row in rows]
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactRead)
@@ -391,16 +439,34 @@ def get_artifact(artifact_id: str, session: Session = Depends(get_session)):
     row = session.get(UploadedArtifact, artifact_id)
     if not row:
         raise HTTPException(status_code=404, detail="artifact not found")
-    return ArtifactRead(
-        id=row.id,
-        workflow_id=row.workflow_id,
-        kind=row.kind,
-        file_name=row.file_name,
-        file_size=row.file_size,
-        content_type=row.content_type,
-        sha256=row.sha256,
-        created_at=row.created_at,
+    return _artifact_to_read(row)
+
+
+@router.post("/artifacts/{artifact_id}/rollback", response_model=ArtifactRead)
+def rollback_artifact(
+    artifact_id: str,
+    payload: ArtifactRollbackRequest,
+    session: Session = Depends(get_session),
+):
+    target = session.get(UploadedArtifact, artifact_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="artifact not found")
+
+    query = select(UploadedArtifact).where(
+        UploadedArtifact.kind == target.kind,
+        UploadedArtifact.logical_key == target.logical_key,
     )
+    if target.workflow_id is None:
+        query = query.where(UploadedArtifact.workflow_id.is_(None))
+    else:
+        query = query.where(UploadedArtifact.workflow_id == target.workflow_id)
+    siblings = list(session.exec(query))
+    for item in siblings:
+        item.is_active = item.id == target.id
+        session.add(item)
+    session.commit()
+    session.refresh(target)
+    return _artifact_to_read(target)
 
 
 @router.get("/artifacts/{artifact_id}/download")

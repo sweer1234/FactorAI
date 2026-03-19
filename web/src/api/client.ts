@@ -85,6 +85,10 @@ interface ApiArtifact {
   id: string
   workflow_id?: string | null
   kind: string
+  logical_key?: string
+  version?: number
+  is_active?: boolean
+  parent_artifact_id?: string | null
   file_name: string
   file_size: number
   content_type?: string | null
@@ -167,6 +171,10 @@ function toArtifact(item: ApiArtifact): Artifact {
     id: item.id,
     workflowId: item.workflow_id ?? undefined,
     kind: item.kind,
+    logicalKey: item.logical_key ?? undefined,
+    version: item.version ?? undefined,
+    isActive: item.is_active ?? undefined,
+    parentArtifactId: item.parent_artifact_id ?? undefined,
     fileName: item.file_name,
     fileSize: item.file_size,
     contentType: item.content_type ?? undefined,
@@ -295,10 +303,17 @@ export async function fetchRunNodeStates(runId: string) {
   return data.map(toNodeState)
 }
 
-export async function fetchArtifacts(params?: { workflowId?: string; kind?: string }) {
+export async function fetchArtifacts(params?: {
+  workflowId?: string
+  kind?: string
+  logicalKey?: string
+  activeOnly?: boolean
+}) {
   const query = new URLSearchParams()
   if (params?.workflowId) query.set('workflow_id', params.workflowId)
   if (params?.kind) query.set('kind', params.kind)
+  if (params?.logicalKey) query.set('logical_key', params.logicalKey)
+  if (typeof params?.activeOnly === 'boolean') query.set('active_only', String(params.activeOnly))
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiArtifact[]>(`/artifacts${suffix}`)
   return data.map(toArtifact)
@@ -308,11 +323,15 @@ export async function uploadArtifact(payload: {
   file: File
   kind?: string
   workflowId?: string
+  logicalKey?: string
+  activate?: boolean
 }) {
   const form = new FormData()
   form.append('file', payload.file)
   if (payload.kind) form.append('kind', payload.kind)
   if (payload.workflowId) form.append('workflow_id', payload.workflowId)
+  if (payload.logicalKey) form.append('logical_key', payload.logicalKey)
+  if (typeof payload.activate === 'boolean') form.append('activate', String(payload.activate))
 
   const response = await fetch(`${API_BASE}/artifacts/upload`, {
     method: 'POST',
@@ -323,6 +342,14 @@ export async function uploadArtifact(payload: {
     throw new Error(`API ${response.status}: ${text}`)
   }
   const data = (await response.json()) as ApiArtifact
+  return toArtifact(data)
+}
+
+export async function rollbackArtifact(artifactId: string, reason?: string) {
+  const data = await request<ApiArtifact>(`/artifacts/${artifactId}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
   return toArtifact(data)
 }
 

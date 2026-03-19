@@ -391,7 +391,11 @@ export function EditorPage() {
                 <div key={item.id} className="tree-group">
                   <h4>{item.fileName}</h4>
                   <p className="muted">
-                    {item.kind} · {(item.fileSize / 1024).toFixed(1)} KB
+                    {item.kind}
+                    {item.version ? ` v${item.version}` : ''}
+                    {item.isActive ? ' · active' : ''}
+                    {' · '}
+                    {(item.fileSize / 1024).toFixed(1)} KB
                   </p>
                   <button type="button" className="primary ghost mini" onClick={() => bindArtifactToSelected(item.id, item.fileName)}>
                     绑定到当前节点

@@ -115,6 +115,10 @@ export interface Artifact {
   id: string
   workflowId?: string
   kind: string
+  logicalKey?: string
+  version?: number
+  isActive?: boolean
+  parentArtifactId?: string
   fileName: string
   fileSize: number
   contentType?: string
