@@ -93,6 +93,7 @@ interface ApiArtifact {
   file_size: number
   content_type?: string | null
   sha256?: string | null
+  audit?: Record<string, string | number | boolean | null> | null
   created_at: string
 }
 
@@ -179,6 +180,7 @@ function toArtifact(item: ApiArtifact): Artifact {
     fileSize: item.file_size,
     contentType: item.content_type ?? undefined,
     sha256: item.sha256 ?? undefined,
+    audit: item.audit ?? undefined,
     createdAt: item.created_at,
   }
 }

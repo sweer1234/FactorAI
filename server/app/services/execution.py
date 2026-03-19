@@ -11,80 +11,27 @@ import numpy as np
 from sqlmodel import Session, select
 
 from ..db import engine
-from ..models import NodeSpec, Report, Run, RunLog, UploadedArtifact, Workflow, WorkflowNodeState
+from ..models import NodeSpec, Report, Run, RunLog, RunMetricPoint, UploadedArtifact, Workflow, WorkflowNodeState
+from .contract import (
+    ERROR_COMPILE_CYCLE,
+    compile_workflow_contract,
+)
 from .node_handlers import RunContext, execute_node, handle_backtest
 
 
 executor = ThreadPoolExecutor(max_workers=4)
 
 ERROR_GRAPH_CYCLE = "E_GRAPH_CYCLE"
-ERROR_CONTRACT_PORT = "E_CONTRACT_PORT"
-ERROR_CONTRACT_TYPE = "E_CONTRACT_TYPE"
-ERROR_ARTIFACT_NOT_FOUND = "E_ARTIFACT_NOT_FOUND"
-ERROR_ARTIFACT_SCOPE = "E_ARTIFACT_SCOPE"
 ERROR_NODE_EXECUTION = "E_NODE_EXECUTION"
 ERROR_RUN_INTERNAL = "E_RUN_INTERNAL"
 ERROR_RUN_NOT_FOUND = "E_RUN_NOT_FOUND"
 
-WARN_CONTRACT_PORT = "W_CONTRACT_PORT"
-WARN_CONTRACT_TYPE = "W_CONTRACT_TYPE"
 WARN_ARTIFACT_RESOLVE = "W_ARTIFACT_RESOLVE"
-
-PORT_FAMILY_MAP = {
-    "dataset": "table",
-    "market_df": "table",
-    "feature_df": "table",
-    "label_df": "table",
-    "formula_df": "table",
-    "pred_df": "table",
-    "pred_a": "table",
-    "pred_b": "table",
-    "df_factor": "table",
-    "factor_pool": "table",
-    "weighted_factor": "table",
-    "factor_a": "table",
-    "factor_b": "table",
-    "split_formula_df": "table",
-    "converted_formula": "table",
-    "industry_feature_df": "table",
-    "industry_factor": "table",
-    "graph_feature_df": "table",
-    "model_obj": "model",
-    "alphagen_obj": "model",
-    "best_params": "model",
-    "backtest_report": "report",
-    "analysis_report": "report",
-    "result_json": "report",
-    "report_json": "report",
-    "corr_matrix": "report",
-    "ic_report": "report",
-    "artifact_url": "artifact",
-    "contest_artifact": "artifact",
-}
-
-PORT_DATA_TYPE_MAP = {
-    "market_df": "market_table",
-    "feature_df": "feature_table",
-    "label_df": "label_table",
-    "formula_df": "formula_table",
-    "pred_df": "prediction_table",
-    "pred_a": "prediction_table",
-    "pred_b": "prediction_table",
-    "df_factor": "factor_table",
-    "factor_a": "factor_table",
-    "factor_b": "factor_table",
-    "factor_pool": "factor_pool_table",
-    "weighted_factor": "factor_table",
-    "model_obj": "model_binary",
-    "alphagen_obj": "model_binary",
-    "best_params": "model_param",
-    "backtest_report": "report_table",
-    "analysis_report": "report_table",
-    "result_json": "json_report",
-    "report_json": "json_report",
-    "corr_matrix": "corr_report",
-    "artifact_url": "artifact_url",
-    "contest_artifact": "artifact_package",
+DEFAULT_ALERT_THRESHOLDS = {
+    "p95_node_duration_ms": 800,
+    "failed_nodes": 1,
+    "warn_logs": 20,
+    "error_logs": 1,
 }
 
 
@@ -163,6 +110,68 @@ def _update_run(
         session.commit()
 
 
+def _record_metric_point(
+    run_id: str,
+    workflow_id: str,
+    metric_name: str,
+    value: float,
+    tags: dict | None = None,
+    *,
+    created_at: datetime | None = None,
+) -> None:
+    with Session(engine) as session:
+        session.add(
+            RunMetricPoint(
+                id=f"mp-{uuid.uuid4().hex[:10]}",
+                run_id=run_id,
+                workflow_id=workflow_id,
+                metric_name=metric_name,
+                value=float(value),
+                tags=tags or {},
+                created_at=created_at or datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+
+def _build_alerts(summary: dict, thresholds: dict | None = None) -> list[dict]:
+    t = {**DEFAULT_ALERT_THRESHOLDS, **(thresholds or {})}
+    alerts: list[dict] = []
+    if int(summary.get("p95_node_duration_ms", 0)) >= int(t["p95_node_duration_ms"]):
+        alerts.append(
+            {
+                "code": "A_RUN_P95_SLOW",
+                "level": "warn",
+                "message": f"P95 节点耗时过高: {summary.get('p95_node_duration_ms')}ms",
+            }
+        )
+    if int(summary.get("failed_nodes", 0)) >= int(t["failed_nodes"]):
+        alerts.append(
+            {
+                "code": "A_RUN_NODE_FAILED",
+                "level": "error",
+                "message": f"失败节点数告警: {summary.get('failed_nodes')}",
+            }
+        )
+    if int(summary.get("warn_logs", 0)) >= int(t["warn_logs"]):
+        alerts.append(
+            {
+                "code": "A_RUN_WARN_LOGS",
+                "level": "warn",
+                "message": f"告警日志数偏高: {summary.get('warn_logs')}",
+            }
+        )
+    if int(summary.get("error_logs", 0)) >= int(t["error_logs"]):
+        alerts.append(
+            {
+                "code": "A_RUN_ERROR_LOGS",
+                "level": "error",
+                "message": f"错误日志数告警: {summary.get('error_logs')}",
+            }
+        )
+    return alerts
+
+
 def _refresh_run_observability(run_id: str, workflow_id: str) -> dict:
     with Session(engine) as session:
         node_states = list(
@@ -207,6 +216,7 @@ def _refresh_run_observability(run_id: str, workflow_id: str) -> dict:
             "failure_reasons": failure_reasons,
             "updated_at": datetime.utcnow().isoformat(),
         }
+        summary["alerts"] = _build_alerts(summary)
         run = session.get(Run, run_id)
         if run:
             run.observability = summary
@@ -338,61 +348,6 @@ def _nodespec_map(session: Session) -> dict[str, dict]:
     }
 
 
-def _port_family(port: str) -> str:
-    return PORT_FAMILY_MAP.get(port, port)
-
-
-def _port_dtype(port: str) -> str:
-    return PORT_DATA_TYPE_MAP.get(port, port)
-
-
-def _validate_graph_connections(workflow: Workflow, nodespec_map: dict[str, dict]) -> list[dict]:
-    graph = workflow.graph or {}
-    node_map = _node_payload_map(workflow)
-    warnings: list[dict] = []
-    for edge in graph.get("edges", []):
-        source = node_map.get(edge.get("source"))
-        target = node_map.get(edge.get("target"))
-        if not source or not target:
-            continue
-        source_spec = nodespec_map.get(source.get("nodeSpecId", ""))
-        target_spec = nodespec_map.get(target.get("nodeSpecId", ""))
-        if not source_spec or not target_spec:
-            continue
-        outputs = list(source_spec.get("outputs", []))
-        inputs = list(target_spec.get("inputs", []))
-        if not outputs or not inputs:
-            continue
-
-        family_pairs = [(out, inp) for out in outputs for inp in inputs if _port_family(out) == _port_family(inp)]
-        if not family_pairs:
-            warnings.append(
-                {
-                    "code": WARN_CONTRACT_PORT,
-                    "message": (
-                        f"连线契约告警: {source.get('label')}({edge.get('source')}) 输出 {outputs} 与 "
-                        f"{target.get('label')}({edge.get('target')}) 输入 {inputs} 家族不匹配"
-                    ),
-                    "detail": {"edge_id": edge.get("id"), "outputs": outputs, "inputs": inputs},
-                }
-            )
-            continue
-
-        type_pairs = [(out, inp) for out, inp in family_pairs if _port_dtype(out) == _port_dtype(inp)]
-        if not type_pairs:
-            warnings.append(
-                {
-                    "code": WARN_CONTRACT_TYPE,
-                    "message": (
-                        f"连线类型告警: {source.get('label')} -> {target.get('label')} "
-                        f"家族可兼容但具体类型不一致，按兼容模式继续"
-                    ),
-                    "detail": {"edge_id": edge.get("id"), "outputs": outputs, "inputs": inputs},
-                }
-            )
-    return warnings
-
-
 def _resolve_artifact_params(session: Session, workflow_id: str, node_payload: dict) -> tuple[dict, list[dict]]:
     params = dict(node_payload.get("params") or {})
     warnings: list[dict] = []
@@ -482,10 +437,10 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             labels = _node_label_map(workflow)
             nodes_payload = _node_payload_map(workflow)
             nodespec_map = _nodespec_map(session)
-            contract_warnings = _validate_graph_connections(workflow, nodespec_map)
+            contract_result = compile_workflow_contract(workflow.graph or {}, nodespec_map, strict=False)
             ctx = RunContext()
             _append_run_log(run_id, workflow_id, level="INFO", message=f"执行顺序: {order}")
-            for item in contract_warnings:
+            for item in contract_result.get("warnings", []):
                 _append_run_log(
                     run_id,
                     workflow_id,
@@ -494,6 +449,17 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                     error_code=item.get("code"),
                     detail=item.get("detail"),
                 )
+            for item in contract_result.get("errors", []):
+                _append_run_log(
+                    run_id,
+                    workflow_id,
+                    level="ERROR",
+                    message=item["message"],
+                    error_code=item.get("code"),
+                    detail=item.get("detail"),
+                )
+            if any(item.get("code") == ERROR_COMPILE_CYCLE for item in contract_result.get("errors", [])):
+                raise ValueError(f"{ERROR_GRAPH_CYCLE}: 工作流图中存在环，无法执行")
 
             for node_id in order:
                 node_payload = nodes_payload.get(node_id, {"id": node_id, "label": labels.get(node_id, node_id), "params": {}})
@@ -531,6 +497,20 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                 except Exception as exc:
                     node_cost_ms = int((time.time() - start_node_ts) * 1000)
                     error_code, error_msg = _parse_error(exc, default_code=ERROR_NODE_EXECUTION)
+                    _record_metric_point(
+                        run_id,
+                        workflow_id,
+                        "node_duration_ms",
+                        node_cost_ms,
+                        {"node_id": node_id, "node_name": node_name, "status": "failed", "error_code": error_code},
+                    )
+                    _record_metric_point(
+                        run_id,
+                        workflow_id,
+                        "node_failure",
+                        1.0,
+                        {"node_id": node_id, "node_name": node_name, "error_code": error_code},
+                    )
                     _upsert_node_state(
                         run_id,
                         workflow_id,
@@ -554,6 +534,20 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                     raise
 
                 node_cost_ms = int((time.time() - start_node_ts) * 1000)
+                _record_metric_point(
+                    run_id,
+                    workflow_id,
+                    "node_duration_ms",
+                    node_cost_ms,
+                    {"node_id": node_id, "node_name": node_name, "status": "success"},
+                )
+                _record_metric_point(
+                    run_id,
+                    workflow_id,
+                    "node_success",
+                    1.0,
+                    {"node_id": node_id, "node_name": node_name},
+                )
                 for item in node_warnings:
                     _append_run_log(
                         run_id,
@@ -592,6 +586,19 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             _save_report(workflow_id, workflow.name, ctx.report or {})
             duration = _fmt_duration(started, time.time())
             summary = _refresh_run_observability(run_id, workflow_id)
+            _record_metric_point(run_id, workflow_id, "run_total_duration_ms", float(summary.get("total_duration_ms", 0)))
+            _record_metric_point(run_id, workflow_id, "run_p95_node_ms", float(summary.get("p95_node_duration_ms", 0)))
+            _record_metric_point(run_id, workflow_id, "run_failed_nodes", float(summary.get("failed_nodes", 0)))
+            _record_metric_point(run_id, workflow_id, "run_warn_logs", float(summary.get("warn_logs", 0)))
+            _record_metric_point(run_id, workflow_id, "run_error_logs", float(summary.get("error_logs", 0)))
+            for alert in summary.get("alerts", []):
+                _record_metric_point(
+                    run_id,
+                    workflow_id,
+                    "run_alert",
+                    1.0,
+                    {"code": alert.get("code"), "level": alert.get("level"), "message": alert.get("message")},
+                )
             _update_run(run_id, status="success", message="执行完成，报告已生成", duration=duration, observability=summary)
             _append_run_log(run_id, workflow_id, level="INFO", message="运行成功结束")
             _update_workflow_status(workflow_id, "published")
@@ -599,6 +606,7 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             duration = _fmt_duration(started, time.time())
             error_code, error_msg = _parse_error(exc, default_code=ERROR_RUN_INTERNAL)
             summary = _refresh_run_observability(run_id, workflow_id)
+            _record_metric_point(run_id, workflow_id, "run_failure", 1.0, {"error_code": error_code})
             _update_run(
                 run_id,
                 status="failed",
@@ -665,3 +673,38 @@ def get_run_observability(session: Session, run_id: str) -> dict:
     if not run:
         return {}
     return run.observability or {}
+
+
+def get_run_alerts(session: Session, run_id: str, thresholds: dict | None = None) -> list[dict]:
+    summary = get_run_observability(session, run_id)
+    if not summary:
+        return []
+    return _build_alerts(summary, thresholds=thresholds)
+
+
+def list_run_metric_points(
+    session: Session,
+    run_id: str,
+    *,
+    metric_name: str | None = None,
+    limit: int = 500,
+) -> list[RunMetricPoint]:
+    query = select(RunMetricPoint).where(RunMetricPoint.run_id == run_id).order_by(RunMetricPoint.created_at.asc())
+    if metric_name:
+        query = query.where(RunMetricPoint.metric_name == metric_name)
+    rows = list(session.exec(query))
+    return rows[-max(1, min(5000, limit)) :]
+
+
+def list_workflow_metric_points(
+    session: Session,
+    workflow_id: str,
+    *,
+    metric_name: str | None = None,
+    limit: int = 500,
+) -> list[RunMetricPoint]:
+    query = select(RunMetricPoint).where(RunMetricPoint.workflow_id == workflow_id).order_by(RunMetricPoint.created_at.asc())
+    if metric_name:
+        query = query.where(RunMetricPoint.metric_name == metric_name)
+    rows = list(session.exec(query))
+    return rows[-max(1, min(5000, limit)) :]

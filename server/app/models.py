@@ -110,6 +110,7 @@ class UploadedArtifact(SQLModel, table=True):
     file_size: int = Field(default=0)
     content_type: str | None = None
     sha256: str | None = Field(default=None, index=True)
+    audit: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     file_path: str
     created_at: datetime = Field(default_factory=now_utc)
 
@@ -121,3 +122,13 @@ class Report(SQLModel, table=True):
     equity_series: list[float] = Field(default_factory=list, sa_column=Column(JSON))
     layer_return: list[dict[str, float | str]] = Field(default_factory=list, sa_column=Column(JSON))
     updated_at: datetime = Field(default_factory=now_utc)
+
+
+class RunMetricPoint(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    run_id: str = Field(index=True)
+    workflow_id: str = Field(index=True)
+    metric_name: str = Field(index=True)
+    value: float = Field(default=0.0)
+    tags: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now_utc)

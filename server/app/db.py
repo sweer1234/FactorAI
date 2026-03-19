@@ -65,6 +65,8 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN is_active BOOLEAN DEFAULT 1"))
             if not _column_exists(conn, "uploadedartifact", "parent_artifact_id"):
                 conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN parent_artifact_id TEXT"))
+            if not _column_exists(conn, "uploadedartifact", "audit"):
+                conn.execute(text("ALTER TABLE uploadedartifact ADD COLUMN audit JSON"))
 
 
 def init_db() -> None:

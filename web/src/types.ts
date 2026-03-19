@@ -123,6 +123,7 @@ export interface Artifact {
   fileSize: number
   contentType?: string
   sha256?: string
+  audit?: Record<string, string | number | boolean | null>
   createdAt: string
 }
 

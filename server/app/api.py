@@ -15,10 +15,14 @@ from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, W
 from .schemas import (
     ArtifactRead,
     ArtifactRollbackRequest,
+    ContractCompileRead,
     GraphUpdate,
+    ContractIssueRead,
     NodeDefinitionRead,
     NodeStateRead,
     ReportRead,
+    RunAlertsRead,
+    RunMetricPointRead,
     RunLogRead,
     RunObservabilityRead,
     RunRead,
@@ -26,7 +30,17 @@ from .schemas import (
     WorkflowCreate,
     WorkflowRead,
 )
-from .services.execution import get_run_observability, list_node_states, list_run_logs, list_runs, start_run
+from .services.contract import compile_workflow_contract
+from .services.execution import (
+    get_run_alerts,
+    get_run_observability,
+    list_node_states,
+    list_run_logs,
+    list_run_metric_points,
+    list_runs,
+    list_workflow_metric_points,
+    start_run,
+)
 from .services.node_library import NODE_LIBRARY
 
 
@@ -97,14 +111,15 @@ def _artifact_to_read(row: UploadedArtifact) -> ArtifactRead:
         id=row.id,
         workflow_id=row.workflow_id,
         kind=row.kind,
-        logical_key=row.logical_key,
-        version=row.version,
-        is_active=row.is_active,
+        logical_key=row.logical_key or "default",
+        version=int(row.version or 1),
+        is_active=bool(row.is_active),
         parent_artifact_id=row.parent_artifact_id,
         file_name=row.file_name,
         file_size=row.file_size,
         content_type=row.content_type,
         sha256=row.sha256,
+        audit=row.audit or {},
         created_at=row.created_at,
     )
 
@@ -184,16 +199,75 @@ def create_workflow(payload: WorkflowCreate, session: Session = Depends(get_sess
 
 
 @router.put("/workflows/{workflow_id}/graph", response_model=WorkflowRead)
-def update_workflow_graph(workflow_id: str, payload: GraphUpdate, session: Session = Depends(get_session)):
+def update_workflow_graph(
+    workflow_id: str,
+    payload: GraphUpdate,
+    strict_contract: bool = Query(default=False),
+    session: Session = Depends(get_session),
+):
     row = session.get(Workflow, workflow_id)
     if not row:
         raise HTTPException(status_code=404, detail="workflow not found")
+    node_specs = list(session.exec(select(NodeSpec)))
+    nodespec_map = {
+        item.id: {
+            "id": item.id,
+            "name": item.name,
+            "category": item.category,
+            "inputs": item.inputs,
+            "outputs": item.outputs,
+            "params": item.params,
+        }
+        for item in node_specs
+    }
+    compile_result = compile_workflow_contract(payload.graph.model_dump(), nodespec_map, strict=strict_contract)
+    if strict_contract and compile_result.get("errors"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "contract compile failed",
+                "errors": compile_result["errors"],
+            },
+        )
     row.graph = payload.graph.model_dump()
     row.updated_at = datetime.utcnow()
     session.add(row)
     session.commit()
     session.refresh(row)
     return _workflow_to_read(row)
+
+
+@router.get("/workflows/{workflow_id}/contract-compile", response_model=ContractCompileRead)
+def compile_workflow_contract_check(
+    workflow_id: str,
+    strict: bool = Query(default=False),
+    session: Session = Depends(get_session),
+):
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    node_specs = list(session.exec(select(NodeSpec)))
+    nodespec_map = {
+        item.id: {
+            "id": item.id,
+            "name": item.name,
+            "category": item.category,
+            "inputs": item.inputs,
+            "outputs": item.outputs,
+            "params": item.params,
+        }
+        for item in node_specs
+    }
+    result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
+    return ContractCompileRead(
+        valid=result.get("valid", False),
+        strict=result.get("strict", strict),
+        errors=[ContractIssueRead(**item) for item in result.get("errors", [])],
+        warnings=[ContractIssueRead(**item) for item in result.get("warnings", [])],
+        node_input_schemas=result.get("node_input_schemas", {}),
+        node_output_schemas=result.get("node_output_schemas", {}),
+        compiled_at=datetime.utcnow(),
+    )
 
 
 @router.post("/workflows/{workflow_id}/draft", response_model=WorkflowRead)
@@ -337,6 +411,82 @@ def get_run_metrics(run_id: str, session: Session = Depends(get_session)):
     )
 
 
+@router.get("/runs/{run_id}/observability/alerts", response_model=RunAlertsRead)
+def get_run_metric_alerts(
+    run_id: str,
+    p95_node_duration_ms: int | None = Query(default=None),
+    failed_nodes: int | None = Query(default=None),
+    warn_logs: int | None = Query(default=None),
+    error_logs: int | None = Query(default=None),
+    session: Session = Depends(get_session),
+):
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    thresholds = {
+        key: value
+        for key, value in {
+            "p95_node_duration_ms": p95_node_duration_ms,
+            "failed_nodes": failed_nodes,
+            "warn_logs": warn_logs,
+            "error_logs": error_logs,
+        }.items()
+        if value is not None
+    }
+    alerts = get_run_alerts(session, run.id, thresholds=thresholds or None)
+    return RunAlertsRead(run_id=run.id, workflow_id=run.workflow_id, alerts=alerts, thresholds=thresholds)
+
+
+@router.get("/runs/{run_id}/observability/series", response_model=list[RunMetricPointRead])
+def get_run_metric_series(
+    run_id: str,
+    metric_name: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=5000),
+    session: Session = Depends(get_session),
+):
+    run = session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = list_run_metric_points(session, run_id, metric_name=metric_name, limit=limit)
+    return [
+        RunMetricPointRead(
+            id=row.id,
+            run_id=row.run_id,
+            workflow_id=row.workflow_id,
+            metric_name=row.metric_name,
+            value=row.value,
+            tags=row.tags or {},
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/workflows/{workflow_id}/observability/series", response_model=list[RunMetricPointRead])
+def get_workflow_metric_series(
+    workflow_id: str,
+    metric_name: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=5000),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    rows = list_workflow_metric_points(session, workflow_id, metric_name=metric_name, limit=limit)
+    return [
+        RunMetricPointRead(
+            id=row.id,
+            run_id=row.run_id,
+            workflow_id=row.workflow_id,
+            metric_name=row.metric_name,
+            value=row.value,
+            tags=row.tags or {},
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
 @router.get("/reports/{workflow_id}", response_model=ReportRead | None)
 def get_report(workflow_id: str, session: Session = Depends(get_session)):
     row = session.get(Report, workflow_id)
@@ -395,6 +545,13 @@ async def upload_artifact(
         file_size=len(content),
         content_type=file.content_type,
         sha256=sha256,
+        audit={
+            "event": "upload",
+            "logical_key": lk,
+            "version": next_version,
+            "parent_artifact_id": parent_artifact_id,
+            "uploaded_at": datetime.utcnow().isoformat(),
+        },
         file_path=str(save_path),
         created_at=datetime.utcnow(),
     )
@@ -461,12 +618,38 @@ def rollback_artifact(
     else:
         query = query.where(UploadedArtifact.workflow_id == target.workflow_id)
     siblings = list(session.exec(query))
+    next_version = (max((item.version for item in siblings), default=0) + 1)
     for item in siblings:
-        item.is_active = item.id == target.id
-        session.add(item)
+        if item.is_active:
+            item.is_active = False
+            session.add(item)
+
+    new_row = UploadedArtifact(
+        id=f"art-{uuid.uuid4().hex[:10]}",
+        workflow_id=target.workflow_id,
+        kind=target.kind,
+        logical_key=target.logical_key,
+        version=next_version,
+        is_active=True,
+        parent_artifact_id=target.id,
+        file_name=target.file_name,
+        file_size=target.file_size,
+        content_type=target.content_type,
+        sha256=target.sha256,
+        audit={
+            "event": "rollback",
+            "reason": payload.reason,
+            "source_artifact_id": target.id,
+            "source_version": target.version,
+            "rollback_at": datetime.utcnow().isoformat(),
+        },
+        file_path=target.file_path,
+        created_at=datetime.utcnow(),
+    )
+    session.add(new_row)
     session.commit()
-    session.refresh(target)
-    return _artifact_to_read(target)
+    session.refresh(new_row)
+    return _artifact_to_read(new_row)
 
 
 @router.get("/artifacts/{artifact_id}/download")

@@ -135,6 +135,7 @@ class ArtifactRead(BaseModel):
     file_size: int
     content_type: str | None = None
     sha256: str | None = None
+    audit: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -146,3 +147,38 @@ class RunObservabilityRead(BaseModel):
     run_id: str
     workflow_id: str
     summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunAlertsRead(BaseModel):
+    run_id: str
+    workflow_id: str
+    alerts: list[dict[str, Any]] = Field(default_factory=list)
+    thresholds: dict[str, int | float] = Field(default_factory=dict)
+
+
+class RunMetricPointRead(BaseModel):
+    id: str
+    run_id: str
+    workflow_id: str
+    metric_name: str
+    value: float
+    tags: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class ContractIssueRead(BaseModel):
+    code: str
+    message: str
+    node_id: str | None = None
+    edge_id: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContractCompileRead(BaseModel):
+    valid: bool
+    strict: bool
+    errors: list[ContractIssueRead] = Field(default_factory=list)
+    warnings: list[ContractIssueRead] = Field(default_factory=list)
+    node_input_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
+    node_output_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
+    compiled_at: datetime
