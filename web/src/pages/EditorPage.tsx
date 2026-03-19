@@ -90,6 +90,7 @@ export function EditorPage() {
     refreshExecutionByWorkflowId,
     getArtifactsByWorkflowId,
     uploadArtifactForWorkflow,
+    applyContractFixes,
   } = useWorkspace()
 
   const [activeTab, setActiveTab] = useState<EditorTab>('library')
@@ -107,6 +108,7 @@ export function EditorPage() {
   const refreshExecutionRef = useRef(refreshExecutionByWorkflowId)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [editorNotice, setEditorNotice] = useState<string | null>(null)
+  const [applyingFixes, setApplyingFixes] = useState(false)
   const activeWorkflowId = workflow?.id
 
   useEffect(() => {
@@ -269,6 +271,30 @@ export function EditorPage() {
   }
 
   const onUploadClicked = () => fileRef.current?.click()
+
+  const onAutoApplyFixes = async () => {
+    if (!workflow) return
+    setApplyingFixes(true)
+    try {
+      const result = await applyContractFixes(workflow.id)
+      if (!result) {
+        setEditorNotice('自动修复未执行')
+        return
+      }
+      const nextGraph = result.workflow.graph
+      setNodes(toReactNodes(nextGraph.nodes ?? [], nodeLibrary))
+      setEdges((nextGraph.edges ?? []).map((edge) => ({ ...edge })))
+      const appliedCount = result.appliedActions.filter((item) => item.status === 'applied').length
+      setEditorNotice(
+        `自动修复已应用 ${appliedCount} 条，当前错误 ${result.compile.errors.length} 条，警告 ${result.compile.warnings.length} 条`,
+      )
+    } catch {
+      setEditorNotice('自动修复失败，请稍后重试')
+    } finally {
+      setApplyingFixes(false)
+    }
+  }
+
   const bindArtifactToSelected = (artifactId: string, fileName: string) => {
     if (!selectedNodeSpecId) {
       setEditorNotice('请先选择一个节点')
@@ -349,6 +375,9 @@ export function EditorPage() {
             <div className="panel-header">
               <button type="button" className="primary ghost mini" onClick={onUploadClicked}>
                 上传
+              </button>
+              <button type="button" className="primary ghost mini" onClick={() => void onAutoApplyFixes()} disabled={applyingFixes}>
+                {applyingFixes ? '修复中…' : '自动修复契约'}
               </button>
               <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onUploadSelected} />
               <input

@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useEffect, useState, type ReactNode } from 'react'
 import {
+  applyWorkflowContractFixes,
   cloneTemplate as apiCloneTemplate,
   createWorkflow as apiCreateWorkflow,
   fetchArtifacts,
@@ -24,6 +25,7 @@ import {
 } from '../data/mock'
 import type {
   Artifact,
+  ContractFixApplyResult,
   NodeDefinition,
   NodeState,
   ReportSnapshot,
@@ -65,6 +67,7 @@ export interface WorkspaceStore {
   refreshExecutionByWorkflowId: (workflowId: string) => Promise<void>
   refreshArtifactsByWorkflowId: (workflowId: string) => Promise<void>
   uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<Artifact | null>
+  applyContractFixes: (workflowId: string) => Promise<ContractFixApplyResult | null>
   notice: string | null
 }
 
@@ -285,6 +288,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return artifact
   }
 
+  const applyContractFixesForWorkflow: WorkspaceStore['applyContractFixes'] = async (workflowId) => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法自动修复')
+      return null
+    }
+    const result = await applyWorkflowContractFixes(workflowId)
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? result.workflow : item)))
+    updateNotice(`自动修复完成：应用 ${result.appliedActions.filter((item) => item.status === 'applied').length} 条`)
+    return result
+  }
+
   const value: WorkspaceStore = {
     workflows,
     templates,
@@ -310,6 +324,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     refreshExecutionByWorkflowId,
     refreshArtifactsByWorkflowId,
     uploadArtifactForWorkflow,
+    applyContractFixes: applyContractFixesForWorkflow,
     notice,
   }
 

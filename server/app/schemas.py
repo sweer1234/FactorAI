@@ -194,6 +194,26 @@ class ContractCompileRead(BaseModel):
     compiled_at: datetime
 
 
+class ContractFixApplyRequest(BaseModel):
+    strict: bool = False
+    suggestion_indexes: list[int] = Field(default_factory=list)
+    max_actions: int = 20
+
+
+class ContractFixAppliedActionRead(BaseModel):
+    index: int
+    action: str
+    status: str
+    message: str
+    patch: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContractFixApplyRead(BaseModel):
+    workflow: WorkflowRead
+    compile: ContractCompileRead
+    applied_actions: list[ContractFixAppliedActionRead] = Field(default_factory=list)
+
+
 class RunCompareRead(BaseModel):
     workflow_id: str
     run_ids: list[str] = Field(default_factory=list)
@@ -208,3 +228,11 @@ class SLOViewRead(BaseModel):
     pass_count: int
     fail_count: int
     runs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SLOTemplateRead(BaseModel):
+    workflow_id: str
+    workflow_category: str
+    profile: str
+    reason: str
+    thresholds: dict[str, int | float] = Field(default_factory=dict)

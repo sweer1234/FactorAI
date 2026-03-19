@@ -179,6 +179,20 @@ export interface ContractCompileResult {
   compiledAt: string
 }
 
+export interface ContractFixAppliedAction {
+  index: number
+  action: string
+  status: 'applied' | 'skipped'
+  message: string
+  patch: Record<string, string | number | boolean | null | object | unknown[]>
+}
+
+export interface ContractFixApplyResult {
+  workflow: Workflow
+  compile: ContractCompileResult
+  appliedActions: ContractFixAppliedAction[]
+}
+
 export interface RunCompare {
   workflowId: string
   runIds: string[]
@@ -193,4 +207,12 @@ export interface SloView {
   passCount: number
   failCount: number
   runs: Array<Record<string, string | number | boolean | null>>
+}
+
+export interface SloTemplate {
+  workflowId: string
+  workflowCategory: string
+  profile: string
+  reason: string
+  thresholds: Record<string, number>
 }

@@ -389,6 +389,12 @@ a {
   color: #a8bde8;
 }
 
+.button-link:disabled,
+.primary:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
 .template-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -587,6 +593,30 @@ select {
   fill: none;
   stroke: #5f84ff;
   stroke-width: 1.8;
+}
+
+.trend-chart polyline {
+  stroke-width: 1.6;
+}
+
+.trend-legends {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.trend-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #b8c9ef;
+}
+
+.trend-legend em {
+  font-style: normal;
+  color: #e5eeff;
 }
 
 .bar-chart {

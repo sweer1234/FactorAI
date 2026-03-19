@@ -1,6 +1,8 @@
 import type {
   Artifact,
   ContractCompileResult,
+  ContractFixAppliedAction,
+  ContractFixApplyResult,
   ContractFixSuggestion,
   NodeState,
   NodeDefinition,
@@ -8,6 +10,7 @@ import type {
   RunLog,
   RunRecord,
   RunCompare,
+  SloTemplate,
   SloView,
   Template,
   Workflow,
@@ -133,6 +136,20 @@ interface ApiContractCompile {
   compiled_at: string
 }
 
+interface ApiContractFixAppliedAction {
+  index: number
+  action: string
+  status: 'applied' | 'skipped'
+  message: string
+  patch: Record<string, unknown>
+}
+
+interface ApiContractFixApply {
+  workflow: ApiWorkflow
+  compile: ApiContractCompile
+  applied_actions: ApiContractFixAppliedAction[]
+}
+
 interface ApiRunCompare {
   workflow_id: string
   run_ids: string[]
@@ -147,6 +164,14 @@ interface ApiSloView {
   pass_count: number
   fail_count: number
   runs: Array<Record<string, string | number | boolean | null>>
+}
+
+interface ApiSloTemplate {
+  workflow_id: string
+  workflow_category: string
+  profile: string
+  reason: string
+  thresholds: Record<string, number>
 }
 
 function toWorkflow(item: ApiWorkflow): Workflow {
@@ -277,11 +302,39 @@ function toContractCompile(item: ApiContractCompile): ContractCompileResult {
   }
 }
 
+function toContractFixAppliedAction(item: ApiContractFixAppliedAction): ContractFixAppliedAction {
+  return {
+    index: item.index,
+    action: item.action,
+    status: item.status,
+    message: item.message,
+    patch: item.patch as Record<string, string | number | boolean | null | object | unknown[]>,
+  }
+}
+
+function toContractFixApply(item: ApiContractFixApply): ContractFixApplyResult {
+  return {
+    workflow: toWorkflow(item.workflow),
+    compile: toContractCompile(item.compile),
+    appliedActions: item.applied_actions.map(toContractFixAppliedAction),
+  }
+}
+
 function toRunCompare(item: ApiRunCompare): RunCompare {
   return {
     workflowId: item.workflow_id,
     runIds: item.run_ids,
     metrics: item.metrics,
+  }
+}
+
+function toSloTemplate(item: ApiSloTemplate): SloTemplate {
+  return {
+    workflowId: item.workflow_id,
+    workflowCategory: item.workflow_category,
+    profile: item.profile,
+    reason: item.reason,
+    thresholds: item.thresholds,
   }
 }
 
@@ -489,6 +542,21 @@ export async function fetchWorkflowContractFixSuggestions(workflowId: string, st
   return data.map(toContractFixSuggestion)
 }
 
+export async function applyWorkflowContractFixes(
+  workflowId: string,
+  payload?: { strict?: boolean; suggestionIndexes?: number[]; maxActions?: number },
+) {
+  const data = await request<ApiContractFixApply>(`/workflows/${workflowId}/contract-fix-apply`, {
+    method: 'POST',
+    body: JSON.stringify({
+      strict: payload?.strict ?? false,
+      suggestion_indexes: payload?.suggestionIndexes ?? [],
+      max_actions: payload?.maxActions ?? 20,
+    }),
+  })
+  return toContractFixApply(data)
+}
+
 export async function fetchWorkflowRunCompare(workflowId: string, runIds?: string[]) {
   const query = new URLSearchParams()
   if (runIds && runIds.length > 0) query.set('run_ids', runIds.join(','))
@@ -501,6 +569,8 @@ export async function fetchWorkflowSloView(
   workflowId: string,
   params?: {
     windowSize?: number
+    useTemplate?: boolean
+    profile?: string
     p95NodeDurationMs?: number
     failedNodes?: number
     warnLogs?: number
@@ -509,6 +579,8 @@ export async function fetchWorkflowSloView(
 ) {
   const query = new URLSearchParams()
   if (params?.windowSize) query.set('window_size', String(params.windowSize))
+  if (typeof params?.useTemplate === 'boolean') query.set('use_template', String(params.useTemplate))
+  if (params?.profile) query.set('profile', params.profile)
   if (params?.p95NodeDurationMs) query.set('p95_node_duration_ms', String(params.p95NodeDurationMs))
   if (typeof params?.failedNodes === 'number') query.set('failed_nodes', String(params.failedNodes))
   if (typeof params?.warnLogs === 'number') query.set('warn_logs', String(params.warnLogs))
@@ -516,6 +588,14 @@ export async function fetchWorkflowSloView(
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiSloView>(`/workflows/${workflowId}/observability/slo${suffix}`)
   return toSloView(data)
+}
+
+export async function fetchWorkflowSloTemplate(workflowId: string, profile?: string) {
+  const query = new URLSearchParams()
+  if (profile) query.set('profile', profile)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiSloTemplate>(`/workflows/${workflowId}/observability/slo-template${suffix}`)
+  return toSloTemplate(data)
 }
 
 export async function fetchBootstrap() {

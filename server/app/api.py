@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 import hashlib
 from pathlib import Path
@@ -17,6 +18,9 @@ from .schemas import (
     ArtifactRead,
     ArtifactRollbackRequest,
     ContractCompileRead,
+    ContractFixApplyRead,
+    ContractFixApplyRequest,
+    ContractFixAppliedActionRead,
     ContractFixSuggestionRead,
     GraphUpdate,
     ContractIssueRead,
@@ -26,6 +30,7 @@ from .schemas import (
     RunAlertsRead,
     RunCompareRead,
     RunMetricPointRead,
+    SLOTemplateRead,
     SLOViewRead,
     RunLogRead,
     RunObservabilityRead,
@@ -46,6 +51,7 @@ from .services.execution import (
     start_run,
 )
 from .services.node_library import NODE_LIBRARY
+from .services.slo import DEFAULT_THRESHOLDS, resolve_slo_profile
 
 
 router = APIRouter()
@@ -126,6 +132,217 @@ def _artifact_to_read(row: UploadedArtifact) -> ArtifactRead:
         audit=row.audit or {},
         created_at=row.created_at,
     )
+
+
+def _style_variant_by_category(category: str) -> str:
+    if category.startswith("01"):
+        return "data"
+    if category.startswith("02"):
+        return "feature"
+    if category.startswith("03"):
+        return "model"
+    if category.startswith("04"):
+        return "factor"
+    if category.startswith("05"):
+        return "backtest"
+    return "default"
+
+
+def _nodespec_map(session: Session) -> dict[str, dict[str, Any]]:
+    node_specs = list(session.exec(select(NodeSpec)))
+    return {
+        item.id: {
+            "id": item.id,
+            "name": item.name,
+            "category": item.category,
+            "inputs": item.inputs,
+            "outputs": item.outputs,
+            "params": item.params,
+        }
+        for item in node_specs
+    }
+
+
+def _to_compile_read(result: dict[str, Any], strict: bool) -> ContractCompileRead:
+    return ContractCompileRead(
+        valid=result.get("valid", False),
+        strict=result.get("strict", strict),
+        errors=[ContractIssueRead(**item) for item in result.get("errors", [])],
+        warnings=[ContractIssueRead(**item) for item in result.get("warnings", [])],
+        suggestions=[ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])],
+        node_input_schemas=result.get("node_input_schemas", {}),
+        node_output_schemas=result.get("node_output_schemas", {}),
+        compiled_at=datetime.utcnow(),
+    )
+
+
+def _resolve_slo_thresholds(
+    workflow: Workflow,
+    *,
+    use_template: bool,
+    profile: str | None,
+    overrides: dict[str, int | None],
+) -> dict[str, int]:
+    base = dict(DEFAULT_THRESHOLDS)
+    if use_template:
+        template = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=profile)
+        base.update({key: int(value) for key, value in template.get("thresholds", {}).items()})
+    for key, value in overrides.items():
+        if value is not None:
+            base[key] = int(value)
+    return base
+
+
+def _apply_contract_suggestions(
+    graph: dict[str, Any],
+    nodespec_map: dict[str, dict[str, Any]],
+    suggestions: list[dict[str, Any]],
+    *,
+    suggestion_indexes: list[int],
+    max_actions: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    draft = deepcopy(graph or {})
+    nodes = [dict(item) for item in draft.get("nodes", [])]
+    edges = [dict(item) for item in draft.get("edges", [])]
+    node_order = [item.get("id") for item in nodes if item.get("id")]
+    node_map = {item["id"]: item for item in nodes if item.get("id")}
+    edge_pairs = {(item.get("source"), item.get("target")) for item in edges}
+    used_indexes: set[int] = set()
+    selected: list[tuple[int, dict[str, Any]]] = []
+
+    if suggestion_indexes:
+        for index in suggestion_indexes:
+            if 0 <= index < len(suggestions) and index not in used_indexes:
+                selected.append((index, suggestions[index]))
+                used_indexes.add(index)
+    else:
+        selected = list(enumerate(suggestions))
+
+    selected = selected[: max(1, min(200, max_actions))]
+    applied_actions: list[dict[str, Any]] = []
+
+    for index, item in selected:
+        action = str(item.get("proposed_action", "unknown"))
+        patch = dict(item.get("patch") or {})
+        status = "skipped"
+        message = "当前建议类型暂未支持自动应用"
+
+        if action == "connect_edge":
+            source = str(patch.get("source") or "")
+            target = str(patch.get("target") or "")
+            if source in node_map and target in node_map:
+                if (source, target) in edge_pairs:
+                    message = "连线已存在，跳过"
+                else:
+                    edges.append(
+                        {
+                            "id": f"e-auto-{uuid.uuid4().hex[:8]}",
+                            "source": source,
+                            "target": target,
+                            "animated": True,
+                        }
+                    )
+                    edge_pairs.add((source, target))
+                    status = "applied"
+                    message = "已新增建议连线"
+            else:
+                message = "源节点或目标节点不存在，无法应用"
+
+        elif action in {"upgrade_schema_version", "upgrade_schema_or_insert_transform"}:
+            target = str(patch.get("target") or "")
+            params_patch = dict(patch.get("params_patch") or {})
+            if target in node_map:
+                node = dict(node_map[target])
+                node_params = dict(node.get("params") or {})
+                node_params.update(params_patch)
+                node["params"] = node_params
+                node_map[target] = node
+                status = "applied"
+                message = "已更新节点参数补丁"
+            else:
+                message = "目标节点不存在，无法应用参数补丁"
+
+        if action in {"insert_adapter_node", "upgrade_schema_or_insert_transform"}:
+            adapter_spec_id = str(patch.get("adapter_node_spec_id") or "feature.build")
+            target = str(patch.get("target") or "")
+            if adapter_spec_id in nodespec_map and target in node_map:
+                spec = nodespec_map[adapter_spec_id]
+                target_node = node_map[target]
+                target_position = target_node.get("position") or {"x": 400, "y": 220}
+                adapter_id = f"n-auto-{uuid.uuid4().hex[:8]}"
+                adapter_params = {
+                    str(param.get("key")): param.get("defaultValue")
+                    for param in spec.get("params", [])
+                    if param.get("key")
+                }
+                adapter_node = {
+                    "id": adapter_id,
+                    "label": spec.get("name", adapter_spec_id),
+                    "position": {
+                        "x": float(target_position.get("x", 400)) - 210,
+                        "y": float(target_position.get("y", 220)) - 20,
+                    },
+                    "styleVariant": _style_variant_by_category(str(spec.get("category", ""))),
+                    "nodeSpecId": adapter_spec_id,
+                    "params": adapter_params,
+                }
+                node_map[adapter_id] = adapter_node
+                node_order.append(adapter_id)
+                incoming = [edge for edge in edges if edge.get("target") == target]
+                source = str(patch.get("source") or (incoming[0].get("source") if incoming else ""))
+                if source and source in node_map and (source, adapter_id) not in edge_pairs:
+                    edges.append(
+                        {
+                            "id": f"e-auto-{uuid.uuid4().hex[:8]}",
+                            "source": source,
+                            "target": adapter_id,
+                            "animated": True,
+                        }
+                    )
+                    edge_pairs.add((source, adapter_id))
+                if (adapter_id, target) not in edge_pairs:
+                    edges.append(
+                        {
+                            "id": f"e-auto-{uuid.uuid4().hex[:8]}",
+                            "source": adapter_id,
+                            "target": target,
+                            "animated": True,
+                        }
+                    )
+                    edge_pairs.add((adapter_id, target))
+                status = "applied"
+                message = "已插入适配节点并建立连线"
+            elif status != "applied":
+                message = "适配节点规格或目标节点缺失，无法插入"
+
+        if action == "add_column_mapping":
+            target = str(patch.get("target") or "")
+            missing_columns = [str(item) for item in patch.get("missing_columns", []) if str(item)]
+            if target in node_map:
+                node = dict(node_map[target])
+                node_params = dict(node.get("params") or {})
+                node_params["autoColumnMapping"] = True
+                if missing_columns:
+                    node_params["requiredColumns"] = ",".join(missing_columns)
+                node["params"] = node_params
+                node_map[target] = node
+                status = "applied"
+                message = "已自动补充字段映射参数"
+            else:
+                message = "目标节点不存在，无法补齐字段映射"
+
+        applied_actions.append(
+            {
+                "index": index,
+                "action": action,
+                "status": status,
+                "message": message,
+                "patch": patch,
+            }
+        )
+
+    final_nodes = [node_map[node_id] for node_id in node_order if node_id in node_map]
+    return {"nodes": final_nodes, "edges": edges}, applied_actions
 
 
 @router.get("/health")
@@ -212,18 +429,7 @@ def update_workflow_graph(
     row = session.get(Workflow, workflow_id)
     if not row:
         raise HTTPException(status_code=404, detail="workflow not found")
-    node_specs = list(session.exec(select(NodeSpec)))
-    nodespec_map = {
-        item.id: {
-            "id": item.id,
-            "name": item.name,
-            "category": item.category,
-            "inputs": item.inputs,
-            "outputs": item.outputs,
-            "params": item.params,
-        }
-        for item in node_specs
-    }
+    nodespec_map = _nodespec_map(session)
     compile_result = compile_workflow_contract(payload.graph.model_dump(), nodespec_map, strict=strict_contract)
     if strict_contract and compile_result.get("errors"):
         raise HTTPException(
@@ -242,6 +448,44 @@ def update_workflow_graph(
     return _workflow_to_read(row)
 
 
+@router.post("/workflows/{workflow_id}/contract-fix-apply", response_model=ContractFixApplyRead)
+def apply_contract_fix_suggestions(
+    workflow_id: str,
+    payload: ContractFixApplyRequest,
+    session: Session = Depends(get_session),
+):
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    nodespec_map = _nodespec_map(session)
+    compile_result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=payload.strict)
+    suggestions = compile_result.get("suggestions", [])
+    if not suggestions:
+        return ContractFixApplyRead(
+            workflow=_workflow_to_read(row),
+            compile=_to_compile_read(compile_result, strict=payload.strict),
+            applied_actions=[],
+        )
+    next_graph, applied_actions = _apply_contract_suggestions(
+        row.graph or {"nodes": [], "edges": []},
+        nodespec_map,
+        suggestions,
+        suggestion_indexes=payload.suggestion_indexes,
+        max_actions=payload.max_actions,
+    )
+    row.graph = next_graph
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    compile_after = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=payload.strict)
+    return ContractFixApplyRead(
+        workflow=_workflow_to_read(row),
+        compile=_to_compile_read(compile_after, strict=payload.strict),
+        applied_actions=[ContractFixAppliedActionRead(**item) for item in applied_actions],
+    )
+
+
 @router.get("/workflows/{workflow_id}/contract-compile", response_model=ContractCompileRead)
 def compile_workflow_contract_check(
     workflow_id: str,
@@ -251,29 +495,9 @@ def compile_workflow_contract_check(
     row = session.get(Workflow, workflow_id)
     if not row:
         raise HTTPException(status_code=404, detail="workflow not found")
-    node_specs = list(session.exec(select(NodeSpec)))
-    nodespec_map = {
-        item.id: {
-            "id": item.id,
-            "name": item.name,
-            "category": item.category,
-            "inputs": item.inputs,
-            "outputs": item.outputs,
-            "params": item.params,
-        }
-        for item in node_specs
-    }
+    nodespec_map = _nodespec_map(session)
     result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
-    return ContractCompileRead(
-        valid=result.get("valid", False),
-        strict=result.get("strict", strict),
-        errors=[ContractIssueRead(**item) for item in result.get("errors", [])],
-        warnings=[ContractIssueRead(**item) for item in result.get("warnings", [])],
-        suggestions=[ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])],
-        node_input_schemas=result.get("node_input_schemas", {}),
-        node_output_schemas=result.get("node_output_schemas", {}),
-        compiled_at=datetime.utcnow(),
-    )
+    return _to_compile_read(result, strict)
 
 
 @router.get("/workflows/{workflow_id}/contract-fix-suggestions", response_model=list[ContractFixSuggestionRead])
@@ -285,18 +509,7 @@ def get_contract_fix_suggestions(
     row = session.get(Workflow, workflow_id)
     if not row:
         raise HTTPException(status_code=404, detail="workflow not found")
-    node_specs = list(session.exec(select(NodeSpec)))
-    nodespec_map = {
-        item.id: {
-            "id": item.id,
-            "name": item.name,
-            "category": item.category,
-            "inputs": item.inputs,
-            "outputs": item.outputs,
-            "params": item.params,
-        }
-        for item in node_specs
-    }
+    nodespec_map = _nodespec_map(session)
     result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
     return [ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])]
 
@@ -445,6 +658,8 @@ def get_run_metrics(run_id: str, session: Session = Depends(get_session)):
 @router.get("/runs/{run_id}/observability/alerts", response_model=RunAlertsRead)
 def get_run_metric_alerts(
     run_id: str,
+    use_template: bool = Query(default=True),
+    profile: str | None = Query(default=None),
     p95_node_duration_ms: int | None = Query(default=None),
     failed_nodes: int | None = Query(default=None),
     warn_logs: int | None = Query(default=None),
@@ -454,17 +669,21 @@ def get_run_metric_alerts(
     run = session.get(Run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run not found")
-    thresholds = {
-        key: value
-        for key, value in {
+    workflow = session.get(Workflow, run.workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    thresholds = _resolve_slo_thresholds(
+        workflow,
+        use_template=use_template,
+        profile=profile,
+        overrides={
             "p95_node_duration_ms": p95_node_duration_ms,
             "failed_nodes": failed_nodes,
             "warn_logs": warn_logs,
             "error_logs": error_logs,
-        }.items()
-        if value is not None
-    }
-    alerts = get_run_alerts(session, run.id, thresholds=thresholds or None)
+        },
+    )
+    alerts = get_run_alerts(session, run.id, thresholds=thresholds)
     return RunAlertsRead(run_id=run.id, workflow_id=run.workflow_id, alerts=alerts, thresholds=thresholds)
 
 
@@ -559,10 +778,12 @@ def compare_workflow_runs(
 def get_workflow_slo_view(
     workflow_id: str,
     window_size: int = Query(default=20, ge=1, le=200),
-    p95_node_duration_ms: int = Query(default=800, ge=1),
-    failed_nodes: int = Query(default=0, ge=0),
-    warn_logs: int = Query(default=20, ge=0),
-    error_logs: int = Query(default=0, ge=0),
+    use_template: bool = Query(default=True),
+    profile: str | None = Query(default=None),
+    p95_node_duration_ms: int | None = Query(default=None, ge=1),
+    failed_nodes: int | None = Query(default=None, ge=0),
+    warn_logs: int | None = Query(default=None, ge=0),
+    error_logs: int | None = Query(default=None, ge=0),
     session: Session = Depends(get_session),
 ):
     workflow = session.get(Workflow, workflow_id)
@@ -572,12 +793,17 @@ def get_workflow_slo_view(
         session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
     )[:window_size]
     rows = sorted(rows, key=lambda item: item.created_at)
-    thresholds = {
-        "p95_node_duration_ms": p95_node_duration_ms,
-        "failed_nodes": failed_nodes,
-        "warn_logs": warn_logs,
-        "error_logs": error_logs,
-    }
+    thresholds = _resolve_slo_thresholds(
+        workflow,
+        use_template=use_template,
+        profile=profile,
+        overrides={
+            "p95_node_duration_ms": p95_node_duration_ms,
+            "failed_nodes": failed_nodes,
+            "warn_logs": warn_logs,
+            "error_logs": error_logs,
+        },
+    )
     run_views: list[dict[str, Any]] = []
     pass_count = 0
     for row in rows:
@@ -587,10 +813,10 @@ def get_workflow_slo_view(
         warns = int(summary.get("warn_logs", 0))
         errors = int(summary.get("error_logs", 0))
         ok = (
-            p95 <= p95_node_duration_ms
-            and failed <= failed_nodes
-            and warns <= warn_logs
-            and errors <= error_logs
+            p95 <= int(thresholds["p95_node_duration_ms"])
+            and failed <= int(thresholds["failed_nodes"])
+            and warns <= int(thresholds["warn_logs"])
+            and errors <= int(thresholds["error_logs"])
             and row.status == "success"
         )
         if ok:
@@ -618,6 +844,25 @@ def get_workflow_slo_view(
         pass_count=pass_count,
         fail_count=fail_count,
         runs=run_views,
+    )
+
+
+@router.get("/workflows/{workflow_id}/observability/slo-template", response_model=SLOTemplateRead)
+def get_workflow_slo_template(
+    workflow_id: str,
+    profile: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    result = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=profile)
+    return SLOTemplateRead(
+        workflow_id=workflow.id,
+        workflow_category=workflow.category,
+        profile=str(result.get("profile", "default")),
+        reason=str(result.get("reason", "category_auto")),
+        thresholds={key: int(value) for key, value in result.get("thresholds", DEFAULT_THRESHOLDS).items()},
     )
 
 

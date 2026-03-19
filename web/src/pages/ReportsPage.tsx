@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { fetchWorkflowRunCompare, fetchWorkflowSloView } from '../api/client'
+import { fetchWorkflowRunCompare, fetchWorkflowSloTemplate, fetchWorkflowSloView } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { RunCompare, SloView } from '../types'
+import type { RunCompare, SloTemplate, SloView } from '../types'
 
 function pct(value: number) {
   return `${(value * 100).toFixed(1)}%`
@@ -18,6 +18,7 @@ export function ReportsPage() {
   const layerReturn = report?.layerReturn ?? []
   const [runCompare, setRunCompare] = useState<RunCompare | null>(null)
   const [sloView, setSloView] = useState<SloView | null>(null)
+  const [sloTemplate, setSloTemplate] = useState<SloTemplate | null>(null)
 
   const workflowRuns = useMemo(
     () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
@@ -29,19 +30,53 @@ export function ReportsPage() {
     const runIds = workflowRuns.map((item) => item.id)
     const load = async () => {
       try {
-        const [compare, slo] = await Promise.all([
+        const [compare, slo, template] = await Promise.all([
           fetchWorkflowRunCompare(workflow.id, runIds),
-          fetchWorkflowSloView(workflow.id, { windowSize: 20, p95NodeDurationMs: 900 }),
+          fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
+          fetchWorkflowSloTemplate(workflow.id),
         ])
         setRunCompare(compare)
         setSloView(slo)
+        setSloTemplate(template)
       } catch {
         setRunCompare(null)
         setSloView(null)
+        setSloTemplate(null)
       }
     }
     void load()
   }, [backendOnline, workflow?.id, workflowRuns])
+
+  const trendDefinitions = [
+    { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
+    { key: 'failed_nodes', label: '失败节点数', color: '#ff8a96' },
+    { key: 'warn_logs', label: 'WARN 日志数', color: '#ffc06f' },
+  ] as const
+
+  const trendSeries = useMemo(() => {
+    if (!runCompare || runCompare.runIds.length === 0) return []
+    return trendDefinitions.map((def) => {
+      const values = runCompare.runIds.map((runId) => {
+        const raw = runCompare.metrics[runId]?.[def.key]
+        const num = Number(raw ?? 0)
+        return Number.isFinite(num) ? num : 0
+      })
+      const max = Math.max(...values, 1)
+      const min = Math.min(...values, 0)
+      const points = values
+        .map((value, idx) => {
+          const x = runCompare.runIds.length <= 1 ? 50 : (idx / (runCompare.runIds.length - 1)) * 100
+          const y = 90 - ((value - min) / (max - min || 1)) * 72
+          return `${x},${y}`
+        })
+        .join(' ')
+      return {
+        ...def,
+        points,
+        latest: values[values.length - 1] ?? 0,
+      }
+    })
+  }, [runCompare])
 
   let equityPoints = ''
   if (equitySeries.length > 0) {
@@ -135,7 +170,10 @@ export function ReportsPage() {
       <section className="panel">
         <div className="panel-header">
           <h3>SLO 视图（最近 20 次）</h3>
-          <span className="tag">{sloView ? pct(sloView.passRate) : '--'}</span>
+          <div className="header-actions">
+            <span className="tag">{sloView ? pct(sloView.passRate) : '--'}</span>
+            <span className="tag">{sloTemplate ? `模板: ${sloTemplate.profile}` : '模板: --'}</span>
+          </div>
         </div>
         {sloView ? (
           <>
@@ -153,6 +191,9 @@ export function ReportsPage() {
                 <strong>{sloView.thresholds.p95_node_duration_ms}ms</strong>
               </article>
             </div>
+            {sloTemplate ? (
+              <p className="muted">按「{sloTemplate.workflowCategory}」自动匹配模板（{sloTemplate.reason}）。</p>
+            ) : null}
             <div className="slo-runs">
               {sloView.runs.slice(-8).map((item) => (
                 <div key={String(item.run_id)} className={`slo-run ${item.slo_pass ? 'pass' : 'fail'}`}>
@@ -164,6 +205,33 @@ export function ReportsPage() {
           </>
         ) : (
           <p className="muted">暂无 SLO 数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>多 Run 趋势图（折线）</h3>
+          <span className="tag">{runCompare?.runIds.length ?? 0} runs</span>
+        </div>
+        {trendSeries.length > 0 ? (
+          <>
+            <div className="trend-legends">
+              {trendSeries.map((item) => (
+                <div key={item.key} className="trend-legend">
+                  <span className="dot" style={{ background: item.color }} />
+                  <strong>{item.label}</strong>
+                  <em>{item.latest.toFixed(0)}</em>
+                </div>
+              ))}
+            </div>
+            <svg viewBox="0 0 100 100" className="line-chart trend-chart" role="img" aria-label="multi run trends">
+              {trendSeries.map((item) => (
+                <polyline key={item.key} points={item.points} style={{ stroke: item.color }} />
+              ))}
+            </svg>
+          </>
+        ) : (
+          <p className="muted">暂无趋势数据</p>
         )}
       </section>
 
