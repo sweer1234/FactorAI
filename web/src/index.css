@@ -770,6 +770,59 @@ select {
   overflow: auto;
 }
 
+.alert-count-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.alert-count-grid article {
+  border: 1px solid #1f335f;
+  border-radius: 10px;
+  background: #0b1325;
+  padding: 8px;
+}
+
+.alert-count-grid span {
+  display: block;
+  color: #8ea5d6;
+  font-size: 12px;
+}
+
+.alert-count-grid strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+}
+
+.alert-incident-list {
+  display: grid;
+  gap: 8px;
+}
+
+.alert-incident {
+  border: 1px solid #203563;
+  border-radius: 10px;
+  background: #0a1327;
+  padding: 8px;
+}
+
+.alert-incident header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: #cfe0ff;
+}
+
+.alert-incident ul {
+  margin: 0;
+  padding-left: 16px;
+  color: #a8bee7;
+  font-size: 13px;
+}
+
 .editor-layout {
   display: grid;
   grid-template-columns: 280px 1fr 320px;

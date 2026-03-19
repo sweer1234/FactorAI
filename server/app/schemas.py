@@ -263,6 +263,23 @@ class WorkflowTrendRead(BaseModel):
     points: dict[str, list[TrendPointRead]] = Field(default_factory=dict)
 
 
+class AlertIncidentRead(BaseModel):
+    run_id: str
+    created_at: str
+    status: str
+    alerts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkflowAlertsRead(BaseModel):
+    workflow_id: str
+    window_size: int
+    thresholds: dict[str, int | float] = Field(default_factory=dict)
+    total_runs: int
+    alert_runs: int
+    counts: dict[str, int] = Field(default_factory=dict)
+    incidents: list[AlertIncidentRead] = Field(default_factory=list)
+
+
 class SLOViewRead(BaseModel):
     workflow_id: str
     window_size: int

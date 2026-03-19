@@ -16,6 +16,7 @@ from .config import settings
 from .db import get_session
 from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, Workflow, WorkflowGraphRevision
 from .schemas import (
+    AlertIncidentRead,
     ArtifactRead,
     ArtifactRollbackRequest,
     ContractCompileRead,
@@ -42,6 +43,7 @@ from .schemas import (
     RunObservabilityRead,
     RunRead,
     TemplateRead,
+    WorkflowAlertsRead,
     WorkflowTrendRead,
     WorkflowCreate,
     WorkflowRead,
@@ -1045,6 +1047,63 @@ def get_workflow_observability_trends(
         run_ids=[item.id for item in rows],
         thresholds=thresholds,
         points=points,
+    )
+
+
+@router.get("/workflows/{workflow_id}/observability/alerts", response_model=WorkflowAlertsRead)
+def get_workflow_alert_incidents(
+    workflow_id: str,
+    window_size: int = Query(default=30, ge=1, le=300),
+    use_template: bool = Query(default=True),
+    profile: str | None = Query(default=None),
+    p95_node_duration_ms: int | None = Query(default=None, ge=1),
+    failed_nodes: int | None = Query(default=None, ge=0),
+    warn_logs: int | None = Query(default=None, ge=0),
+    error_logs: int | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    thresholds = _resolve_slo_thresholds(
+        workflow,
+        use_template=use_template,
+        profile=profile,
+        overrides={
+            "p95_node_duration_ms": p95_node_duration_ms,
+            "failed_nodes": failed_nodes,
+            "warn_logs": warn_logs,
+            "error_logs": error_logs,
+        },
+    )
+    rows = list(
+        session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
+    )[:window_size]
+    counts: dict[str, int] = {}
+    incidents: list[AlertIncidentRead] = []
+    for row in rows:
+        alerts = get_run_alerts(session, row.id, thresholds=thresholds)
+        if not alerts:
+            continue
+        for item in alerts:
+            code = str(item.get("code") or "unknown")
+            counts[code] = counts.get(code, 0) + 1
+        incidents.append(
+            AlertIncidentRead(
+                run_id=row.id,
+                created_at=row.created_at.isoformat(),
+                status=row.status,
+                alerts=alerts,
+            )
+        )
+    return WorkflowAlertsRead(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        thresholds=thresholds,
+        total_runs=len(rows),
+        alert_runs=len(incidents),
+        counts=counts,
+        incidents=incidents,
     )
 
 

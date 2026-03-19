@@ -224,6 +224,23 @@ export interface WorkflowTrends {
   points: Record<string, TrendPoint[]>
 }
 
+export interface AlertIncident {
+  runId: string
+  createdAt: string
+  status: string
+  alerts: Array<Record<string, string | number | boolean | null>>
+}
+
+export interface WorkflowAlerts {
+  workflowId: string
+  windowSize: number
+  thresholds: Record<string, number>
+  totalRuns: number
+  alertRuns: number
+  counts: Record<string, number>
+  incidents: AlertIncident[]
+}
+
 export interface SloView {
   workflowId: string
   windowSize: number

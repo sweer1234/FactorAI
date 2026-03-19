@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  fetchWorkflowAlerts,
   fetchWorkflowRunCompare,
   fetchWorkflowSloTemplate,
   fetchWorkflowSloView,
@@ -8,7 +9,7 @@ import {
   updateWorkflowSloConfig,
 } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { RunCompare, SloTemplate, SloView, WorkflowTrends } from '../types'
+import type { RunCompare, SloTemplate, SloView, WorkflowAlerts, WorkflowTrends } from '../types'
 
 const TREND_DEFINITIONS = [
   { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
@@ -41,6 +42,7 @@ export function ReportsPage() {
   const [sloView, setSloView] = useState<SloView | null>(null)
   const [sloTemplate, setSloTemplate] = useState<SloTemplate | null>(null)
   const [workflowTrends, setWorkflowTrends] = useState<WorkflowTrends | null>(null)
+  const [workflowAlerts, setWorkflowAlerts] = useState<WorkflowAlerts | null>(null)
   const [selectedTrendMetric, setSelectedTrendMetric] = useState('p95_node_duration_ms')
   const [sloProfile, setSloProfile] = useState('auto')
   const [sloThresholds, setSloThresholds] = useState({
@@ -61,7 +63,7 @@ export function ReportsPage() {
     const runIds = workflowRuns.map((item) => item.id)
     const load = async () => {
       try {
-        const [compare, slo, template, trends] = await Promise.all([
+        const [compare, slo, template, trends, alerts] = await Promise.all([
           fetchWorkflowRunCompare(workflow.id, runIds),
           fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
           fetchWorkflowSloTemplate(workflow.id),
@@ -70,11 +72,13 @@ export function ReportsPage() {
             windowSize: 30,
             useTemplate: true,
           }),
+          fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
         ])
         setRunCompare(compare)
         setSloView(slo)
         setSloTemplate(template)
         setWorkflowTrends(trends)
+        setWorkflowAlerts(alerts)
         setSloProfile(template.profile || 'auto')
         setSloThresholds({
           p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
@@ -87,6 +91,7 @@ export function ReportsPage() {
         setSloView(null)
         setSloTemplate(null)
         setWorkflowTrends(null)
+        setWorkflowAlerts(null)
       }
     }
     void load()
@@ -114,6 +119,8 @@ export function ReportsPage() {
         useTemplate: true,
       })
       setWorkflowTrends(trends)
+      const alerts = await fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true })
+      setWorkflowAlerts(alerts)
     } finally {
       setSavingSlo(false)
     }
@@ -490,6 +497,47 @@ export function ReportsPage() {
           </div>
         ) : (
           <p className="muted">暂无对比数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>告警事件时间线</h3>
+          <span className="tag">
+            {workflowAlerts ? `${workflowAlerts.alertRuns}/${workflowAlerts.totalRuns}` : '--'}
+          </span>
+        </div>
+        {workflowAlerts ? (
+          <>
+            <div className="alert-count-grid">
+              {Object.entries(workflowAlerts.counts).map(([code, count]) => (
+                <article key={code}>
+                  <span>{code}</span>
+                  <strong>{count}</strong>
+                </article>
+              ))}
+            </div>
+            <div className="alert-incident-list">
+              {workflowAlerts.incidents.slice(0, 8).map((incident) => (
+                <article key={incident.runId} className="alert-incident">
+                  <header>
+                    <strong>{incident.runId.slice(-8)}</strong>
+                    <span>{incident.status}</span>
+                  </header>
+                  <ul>
+                    {incident.alerts.map((item, idx) => (
+                      <li key={`${incident.runId}-${idx}`}>
+                        {String(item.code ?? 'ALERT')} · {String(item.message ?? '')}
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+              {workflowAlerts.incidents.length === 0 ? <p className="muted">最近窗口无告警事件</p> : null}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无告警时间线数据</p>
         )}
       </section>
     </div>
