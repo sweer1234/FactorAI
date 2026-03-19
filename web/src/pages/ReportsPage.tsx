@@ -121,6 +121,35 @@ export function ReportsPage() {
     })
   }, [runCompare])
 
+  const metricTrendCards = useMemo(() => {
+    if (!runCompare || runCompare.runIds.length === 0) return []
+    return TREND_DEFINITIONS.map((def) => {
+      const values = runCompare.runIds.map((runId) => {
+        const raw = runCompare.metrics[runId]?.[def.key]
+        const num = Number(raw ?? 0)
+        return Number.isFinite(num) ? num : 0
+      })
+      const threshold = Number((sloView?.thresholds as Record<string, number> | undefined)?.[def.key] ?? 0)
+      const max = Math.max(...values, threshold, 1)
+      const min = Math.min(...values, 0)
+      const points = values
+        .map((value, idx) => {
+          const x = runCompare.runIds.length <= 1 ? 50 : (idx / (runCompare.runIds.length - 1)) * 100
+          const y = 90 - ((value - min) / (max - min || 1)) * 70
+          return `${x},${y}`
+        })
+        .join(' ')
+      const thresholdY = 90 - ((threshold - min) / (max - min || 1)) * 70
+      return {
+        ...def,
+        points,
+        latest: values[values.length - 1] ?? 0,
+        threshold,
+        thresholdY,
+      }
+    })
+  }, [runCompare, sloView?.thresholds])
+
   let equityPoints = ''
   if (equitySeries.length > 0) {
     const max = Math.max(...equitySeries)
@@ -337,6 +366,28 @@ export function ReportsPage() {
                 <polyline key={item.key} points={item.points} style={{ stroke: item.color }} />
               ))}
             </svg>
+            <div className="trend-metric-grid">
+              {metricTrendCards.map((item) => (
+                <article key={item.key} className="trend-metric-card">
+                  <header>
+                    <strong>{item.label}</strong>
+                    <span>
+                      当前 {item.latest.toFixed(0)} / 阈值 {item.threshold.toFixed(0)}
+                    </span>
+                  </header>
+                  <svg viewBox="0 0 100 100" role="img" aria-label={`${item.label} trend`}>
+                    <line
+                      x1="0"
+                      y1={String(item.thresholdY)}
+                      x2="100"
+                      y2={String(item.thresholdY)}
+                      className="threshold-line"
+                    />
+                    <polyline points={item.points} style={{ stroke: item.color }} />
+                  </svg>
+                </article>
+              ))}
+            </div>
           </>
         ) : (
           <p className="muted">暂无趋势数据</p>

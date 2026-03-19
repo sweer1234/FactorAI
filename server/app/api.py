@@ -9,6 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+import networkx as nx
 from sqlmodel import Session, select
 
 from .config import settings
@@ -259,6 +260,20 @@ def _apply_contract_suggestions(
     selected = selected[: max(1, min(200, max_actions))]
     applied_actions: list[dict[str, Any]] = []
 
+    def _would_create_cycle(source: str, target: str) -> bool:
+        if source == target:
+            return True
+        dag = nx.DiGraph()
+        for item in node_map:
+            dag.add_node(item)
+        for edge in edges:
+            src = str(edge.get("source") or "")
+            dst = str(edge.get("target") or "")
+            if src and dst:
+                dag.add_edge(src, dst)
+        dag.add_edge(source, target)
+        return not nx.is_directed_acyclic_graph(dag)
+
     for index, item in selected:
         action = str(item.get("proposed_action", "unknown"))
         patch = dict(item.get("patch") or {})
@@ -271,6 +286,8 @@ def _apply_contract_suggestions(
             if source in node_map and target in node_map:
                 if (source, target) in edge_pairs:
                     message = "连线已存在，跳过"
+                elif _would_create_cycle(source, target):
+                    message = "该连线会引入环路，已跳过"
                 else:
                     edges.append(
                         {
@@ -328,7 +345,12 @@ def _apply_contract_suggestions(
                 node_order.append(adapter_id)
                 incoming = [edge for edge in edges if edge.get("target") == target]
                 source = str(patch.get("source") or (incoming[0].get("source") if incoming else ""))
-                if source and source in node_map and (source, adapter_id) not in edge_pairs:
+                if (
+                    source
+                    and source in node_map
+                    and (source, adapter_id) not in edge_pairs
+                    and not _would_create_cycle(source, adapter_id)
+                ):
                     edges.append(
                         {
                             "id": f"e-auto-{uuid.uuid4().hex[:8]}",
@@ -338,7 +360,7 @@ def _apply_contract_suggestions(
                         }
                     )
                     edge_pairs.add((source, adapter_id))
-                if (adapter_id, target) not in edge_pairs:
+                if (adapter_id, target) not in edge_pairs and not _would_create_cycle(adapter_id, target):
                     edges.append(
                         {
                             "id": f"e-auto-{uuid.uuid4().hex[:8]}",
