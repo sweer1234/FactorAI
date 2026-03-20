@@ -65,6 +65,32 @@ class TemplateRead(BaseModel):
     graph: WorkflowGraph
 
 
+class TemplateVersionRead(BaseModel):
+    id: str
+    template_id: str
+    version: str
+    changelog: str
+    graph: WorkflowGraph
+    created_at: datetime
+
+
+class TemplateVersionCreateRequest(BaseModel):
+    version: str | None = None
+    changelog: str = ""
+
+
+class TemplateVersionRollbackRequest(BaseModel):
+    version: str | None = None
+    version_id: str | None = None
+    changelog: str = "rollback to previous version"
+
+
+class TemplateVersionRollbackRead(BaseModel):
+    template: TemplateRead
+    restored_version: TemplateVersionRead
+    created_version: TemplateVersionRead
+
+
 class RunRead(BaseModel):
     id: str
     workflow_id: str
@@ -75,6 +101,14 @@ class RunRead(BaseModel):
     message: str
     logs: list[str]
     observability: dict[str, Any] = Field(default_factory=dict)
+    cancel_requested: bool = False
+    retried_from_run_id: str | None = None
+
+
+class AuthUserRead(BaseModel):
+    user_id: str
+    role: str
+    token: str
 
 
 class RunLogRead(BaseModel):

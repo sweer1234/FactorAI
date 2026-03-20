@@ -15,7 +15,8 @@ from sqlmodel import Session, select
 
 from .config import settings
 from .db import get_session
-from .models import NodeSpec, Report, Run, RunLog, Template, UploadedArtifact, Workflow, WorkflowGraphRevision
+from .models import NodeSpec, Report, Run, RunLog, Template, TemplateVersion, UploadedArtifact, Workflow, WorkflowGraphRevision
+from .security import AuthUser, require_request_access, require_role
 from .schemas import (
     AlertIncidentRead,
     ArtifactRead,
@@ -30,6 +31,7 @@ from .schemas import (
     GraphRevisionRead,
     GraphUpdate,
     ContractIssueRead,
+    AuthUserRead,
     NodeDefinitionRead,
     NodeStateRead,
     ReportRead,
@@ -47,6 +49,10 @@ from .schemas import (
     RunObservabilityRead,
     RunRead,
     TemplateRead,
+    TemplateVersionCreateRequest,
+    TemplateVersionRead,
+    TemplateVersionRollbackRead,
+    TemplateVersionRollbackRequest,
     WorkflowAlertsRead,
     WorkflowAnomaliesRead,
     WorkflowInsightsRead,
@@ -56,6 +62,7 @@ from .schemas import (
 )
 from .services.contract import compile_workflow_contract
 from .services.execution import (
+    cancel_run,
     get_run_alerts,
     get_run_observability,
     list_node_states,
@@ -63,13 +70,14 @@ from .services.execution import (
     list_run_metric_points,
     list_runs,
     list_workflow_metric_points,
+    retry_run,
     start_run,
 )
 from .services.node_library import NODE_LIBRARY
 from .services.slo import DEFAULT_THRESHOLDS, PROFILE_THRESHOLDS, resolve_slo_profile
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_request_access)])
 
 
 def _workflow_to_read(row: Workflow) -> WorkflowRead:
@@ -103,6 +111,33 @@ def _template_to_read(row: Template) -> TemplateRead:
     )
 
 
+def _template_version_to_read(row: TemplateVersion) -> TemplateVersionRead:
+    return TemplateVersionRead(
+        id=row.id,
+        template_id=row.template_id,
+        version=row.version,
+        changelog=row.changelog,
+        graph=row.graph or {"nodes": [], "edges": []},
+        created_at=row.created_at,
+    )
+
+
+def _next_template_version(existing_versions: list[str]) -> str:
+    semver_parts: list[tuple[int, int, int]] = []
+    for item in existing_versions:
+        parts = item.split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            semver_parts.append((int(parts[0]), int(parts[1]), int(parts[2])))
+        except ValueError:
+            continue
+    if not semver_parts:
+        return f"1.0.{len(existing_versions) + 1}"
+    major, minor, patch = sorted(semver_parts)[-1]
+    return f"{major}.{minor}.{patch + 1}"
+
+
 def _run_to_read(row: Run) -> RunRead:
     return RunRead(
         id=row.id,
@@ -114,6 +149,8 @@ def _run_to_read(row: Run) -> RunRead:
         message=row.message,
         logs=row.logs,
         observability=row.observability or {},
+        cancel_requested=bool(row.cancel_requested),
+        retried_from_run_id=row.retried_from_run_id,
     )
 
 
@@ -542,6 +579,15 @@ def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
+@router.get("/auth/me", response_model=AuthUserRead)
+def get_auth_me(current_user: AuthUser = Depends(require_request_access)):
+    return AuthUserRead(
+        user_id=current_user.user_id,
+        role=current_user.role,
+        token=current_user.token,
+    )
+
+
 @router.get("/node-library", response_model=list[NodeDefinitionRead])
 def get_node_library(session: Session = Depends(get_session)):
     rows = list(session.exec(select(NodeSpec).order_by(NodeSpec.category.asc(), NodeSpec.name.asc())))
@@ -892,6 +938,101 @@ def get_template(template_id: str, session: Session = Depends(get_session)):
     return _template_to_read(row)
 
 
+@router.get("/templates/{template_id}/versions", response_model=list[TemplateVersionRead])
+def list_template_versions(template_id: str, session: Session = Depends(get_session)):
+    template = session.get(Template, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="template not found")
+    rows = list(
+        session.exec(
+            select(TemplateVersion).where(TemplateVersion.template_id == template_id).order_by(TemplateVersion.created_at.desc())
+        )
+    )
+    return [_template_version_to_read(item) for item in rows]
+
+
+@router.post("/templates/{template_id}/versions", response_model=TemplateVersionRead)
+def create_template_version(
+    template_id: str,
+    payload: TemplateVersionCreateRequest,
+    session: Session = Depends(get_session),
+    _admin: AuthUser = Depends(require_role("admin")),
+):
+    template = session.get(Template, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="template not found")
+    rows = list(session.exec(select(TemplateVersion).where(TemplateVersion.template_id == template_id)))
+    existing_versions = [item.version for item in rows]
+    next_version = (payload.version or "").strip() or _next_template_version(existing_versions)
+    if next_version in existing_versions:
+        raise HTTPException(status_code=400, detail=f"template version exists: {next_version}")
+    row = TemplateVersion(
+        id=f"tv-{uuid.uuid4().hex[:10]}",
+        template_id=template_id,
+        version=next_version,
+        changelog=payload.changelog or "manual snapshot",
+        graph=template.graph or {"nodes": [], "edges": []},
+        created_at=datetime.utcnow(),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return _template_version_to_read(row)
+
+
+@router.post("/templates/{template_id}/versions/rollback", response_model=TemplateVersionRollbackRead)
+def rollback_template_version(
+    template_id: str,
+    payload: TemplateVersionRollbackRequest,
+    session: Session = Depends(get_session),
+    _admin: AuthUser = Depends(require_role("admin")),
+):
+    template = session.get(Template, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="template not found")
+    target: TemplateVersion | None = None
+    if payload.version_id:
+        target = session.get(TemplateVersion, payload.version_id)
+        if target and target.template_id != template_id:
+            target = None
+    elif payload.version:
+        target = session.exec(
+            select(TemplateVersion).where(
+                TemplateVersion.template_id == template_id,
+                TemplateVersion.version == payload.version,
+            )
+        ).first()
+    else:
+        target = session.exec(
+            select(TemplateVersion).where(TemplateVersion.template_id == template_id).order_by(TemplateVersion.created_at.desc())
+        ).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="template version not found")
+
+    rows = list(session.exec(select(TemplateVersion).where(TemplateVersion.template_id == template_id)))
+    next_version = _next_template_version([item.version for item in rows])
+    created = TemplateVersion(
+        id=f"tv-{uuid.uuid4().hex[:10]}",
+        template_id=template_id,
+        version=next_version,
+        changelog=payload.changelog or f"rollback to {target.version}",
+        graph=target.graph or {"nodes": [], "edges": []},
+        created_at=datetime.utcnow(),
+    )
+    template.graph = target.graph or {"nodes": [], "edges": []}
+    template.updated_at = datetime.utcnow()
+    session.add(template)
+    session.add(created)
+    session.commit()
+    session.refresh(template)
+    session.refresh(created)
+    return TemplateVersionRollbackRead(
+        template=_template_to_read(template),
+        restored_version=_template_version_to_read(target),
+        created_version=_template_version_to_read(created),
+    )
+
+
 @router.post("/templates/{template_id}/clone", response_model=WorkflowRead)
 def clone_template(template_id: str, session: Session = Depends(get_session)):
     template = session.get(Template, template_id)
@@ -926,6 +1067,29 @@ def get_run(run_id: str, session: Session = Depends(get_session)):
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     return _run_to_read(row)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=RunRead)
+def cancel_run_api(run_id: str, session: Session = Depends(get_session)):
+    row = session.get(Run, run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    result = cancel_run(run_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="run not found")
+    return _run_to_read(result)
+
+
+@router.post("/runs/{run_id}/retry", response_model=RunRead)
+def retry_run_api(run_id: str, session: Session = Depends(get_session)):
+    row = session.get(Run, run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        new_run = retry_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _run_to_read(new_run)
 
 
 @router.get("/runs/{run_id}/logs", response_model=list[RunLogRead])

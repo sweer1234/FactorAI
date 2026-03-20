@@ -29,4 +29,23 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/reports/{workflow_id}`
 - `GET /api/templates`
 - `POST /api/templates/{id}/clone`
+- `GET /api/templates/{id}/versions`
+- `POST /api/templates/{id}/versions`（admin）
+- `POST /api/templates/{id}/versions/rollback`（admin）
 - `GET /api/node-library`
+- `POST /api/runs/{id}/cancel`
+- `POST /api/runs/{id}/retry`
+
+## 鉴权与角色
+
+默认开启 token 鉴权（`FACTORAI_AUTH_ENABLED=true`）并启用 RBAC：
+
+- `viewer`：只读接口
+- `editor`：可执行写操作（运行、上传、保存图等）
+- `admin`：模板版本管理
+
+默认 token（`FACTORAI_AUTH_TOKENS` 可覆盖）：
+
+- `dev-viewer-token:viewer:viewer`
+- `dev-editor-token:editor:editor`
+- `dev-admin-token:admin:admin`

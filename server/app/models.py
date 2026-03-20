@@ -70,6 +70,8 @@ class Run(SQLModel, table=True):
     message: str = Field(default="")
     logs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     observability: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    cancel_requested: bool = Field(default=False, index=True)
+    retried_from_run_id: str | None = Field(default=None, index=True)
     updated_at: datetime = Field(default_factory=now_utc)
 
 

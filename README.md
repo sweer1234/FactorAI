@@ -65,6 +65,22 @@ npm run lint
 npm run build
 ```
 
+## 鉴权与 RBAC（新增）
+
+后端默认开启基于 Token 的鉴权与角色控制（viewer/editor/admin）：
+
+- `viewer`：只读接口（GET）
+- `editor`：运行、保存、上传、回滚等写接口（POST/PUT）
+- `admin`：模板版本管理（创建版本、版本回滚）
+
+默认开发 token（可通过 `FACTORAI_AUTH_TOKENS` 覆盖）：
+
+- `dev-viewer-token`
+- `dev-editor-token`
+- `dev-admin-token`
+
+前端默认会携带 `dev-admin-token`（可通过 `VITE_API_TOKEN` 或 localStorage `factorai_api_token` 覆盖）。
+
 ## 已实现页面（MVP）
 
 1. 首页（品牌入口）

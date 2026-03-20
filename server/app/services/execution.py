@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import re
+from threading import Lock
 import time
 import uuid
 
@@ -20,11 +21,14 @@ from .node_handlers import RunContext, execute_node, handle_backtest
 
 
 executor = ThreadPoolExecutor(max_workers=4)
+_future_lock = Lock()
+_run_futures: dict[str, Future] = {}
 
 ERROR_GRAPH_CYCLE = "E_GRAPH_CYCLE"
 ERROR_NODE_EXECUTION = "E_NODE_EXECUTION"
 ERROR_RUN_INTERNAL = "E_RUN_INTERNAL"
 ERROR_RUN_NOT_FOUND = "E_RUN_NOT_FOUND"
+ERROR_RUN_CANCELLED = "E_RUN_CANCELLED"
 
 WARN_ARTIFACT_RESOLVE = "W_ARTIFACT_RESOLVE"
 DEFAULT_ALERT_THRESHOLDS = {
@@ -132,6 +136,35 @@ def _record_metric_point(
             )
         )
         session.commit()
+
+
+def _track_future(run_id: str, future: Future) -> None:
+    with _future_lock:
+        _run_futures[run_id] = future
+
+    def _cleanup(_future: Future) -> None:
+        with _future_lock:
+            _run_futures.pop(run_id, None)
+
+    future.add_done_callback(_cleanup)
+
+
+def _try_cancel_future(run_id: str) -> bool:
+    with _future_lock:
+        future = _run_futures.get(run_id)
+    if future is None:
+        return False
+    return bool(future.cancel())
+
+
+def _is_cancel_requested(run_id: str) -> bool:
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            return False
+        if run.status == "cancelled":
+            return True
+        return bool(run.cancel_requested)
 
 
 def _build_alerts(summary: dict, thresholds: dict | None = None) -> list[dict]:
@@ -424,6 +457,24 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                 error_code=ERROR_RUN_NOT_FOUND,
             )
             return
+        run = session.get(Run, run_id)
+        if not run:
+            return
+        if run.status == "cancelled" or run.cancel_requested:
+            run.status = "cancelled"
+            run.message = "任务已取消（执行前）"
+            run.updated_at = datetime.utcnow()
+            session.add(run)
+            session.commit()
+            _append_run_log(
+                run_id,
+                workflow_id,
+                level="WARN",
+                message="任务在执行前被取消",
+                error_code=ERROR_RUN_CANCELLED,
+            )
+            _update_workflow_status(workflow_id, "draft")
+            return
 
     _update_workflow_status(workflow_id, "running")
     _update_run(run_id, status="running", message="开始执行工作流")
@@ -462,6 +513,8 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                 raise ValueError(f"{ERROR_GRAPH_CYCLE}: 工作流图中存在环，无法执行")
 
             for node_id in order:
+                if _is_cancel_requested(run_id):
+                    raise ValueError(f"{ERROR_RUN_CANCELLED}: 收到取消请求，运行已停止")
                 node_payload = nodes_payload.get(node_id, {"id": node_id, "label": labels.get(node_id, node_id), "params": {}})
                 node_name = node_payload.get("label", labels.get(node_id, node_id))
                 node_spec = nodespec_map.get(node_payload.get("nodeSpecId", ""))
@@ -606,25 +659,41 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             duration = _fmt_duration(started, time.time())
             error_code, error_msg = _parse_error(exc, default_code=ERROR_RUN_INTERNAL)
             summary = _refresh_run_observability(run_id, workflow_id)
-            _record_metric_point(run_id, workflow_id, "run_failure", 1.0, {"error_code": error_code})
-            _update_run(
-                run_id,
-                status="failed",
-                message=f"执行失败[{error_code}]: {error_msg}",
-                duration=duration,
-                observability=summary,
-            )
-            _append_run_log(
-                run_id,
-                workflow_id,
-                level="ERROR",
-                message=f"运行失败: {error_msg}",
-                error_code=error_code,
-            )
+            if error_code == ERROR_RUN_CANCELLED:
+                _update_run(
+                    run_id,
+                    status="cancelled",
+                    message="任务已取消",
+                    duration=duration,
+                    observability=summary,
+                )
+                _append_run_log(
+                    run_id,
+                    workflow_id,
+                    level="WARN",
+                    message=f"运行取消: {error_msg}",
+                    error_code=error_code,
+                )
+            else:
+                _record_metric_point(run_id, workflow_id, "run_failure", 1.0, {"error_code": error_code})
+                _update_run(
+                    run_id,
+                    status="failed",
+                    message=f"执行失败[{error_code}]: {error_msg}",
+                    duration=duration,
+                    observability=summary,
+                )
+                _append_run_log(
+                    run_id,
+                    workflow_id,
+                    level="ERROR",
+                    message=f"运行失败: {error_msg}",
+                    error_code=error_code,
+                )
             _update_workflow_status(workflow_id, "draft")
 
 
-def start_run(workflow_id: str) -> Run:
+def start_run(workflow_id: str, *, retried_from_run_id: str | None = None) -> Run:
     with Session(engine) as session:
         workflow = session.get(Workflow, workflow_id)
         if not workflow:
@@ -640,14 +709,59 @@ def start_run(workflow_id: str) -> Run:
             message="任务已进入队列，等待调度",
             logs=["[INFO] run 已创建"],
             observability={},
+            cancel_requested=False,
+            retried_from_run_id=retried_from_run_id,
         )
         session.add(run)
         session.commit()
         session.refresh(run)
 
     _append_run_log(run.id, workflow_id, level="INFO", message="run 记录已创建")
-    executor.submit(execute_run, run.id, workflow_id)
+    future = executor.submit(execute_run, run.id, workflow_id)
+    _track_future(run.id, future)
     return run
+
+
+def cancel_run(run_id: str) -> Run | None:
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            return None
+        if run.status in {"success", "failed", "cancelled"}:
+            return run
+        run.cancel_requested = True
+        run.updated_at = datetime.utcnow()
+        cancelled_in_queue = False
+        if run.status == "queued":
+            cancelled_in_queue = _try_cancel_future(run_id)
+            run.status = "cancelled"
+            run.message = "任务已取消（队列中）"
+            run.duration = run.duration or "00m 00s"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+    _append_run_log(
+        run.id,
+        run.workflow_id,
+        level="WARN",
+        message="收到取消请求" + ("（已从队列移除）" if cancelled_in_queue else "（等待当前节点结束）"),
+        error_code=ERROR_RUN_CANCELLED,
+    )
+    if run.status == "cancelled":
+        _update_workflow_status(run.workflow_id, "draft")
+    return run
+
+
+def retry_run(run_id: str) -> Run:
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            raise ValueError("run not found")
+        if run.status not in {"failed", "cancelled"}:
+            raise ValueError("only failed/cancelled run can retry")
+        workflow_id = run.workflow_id
+    return start_run(workflow_id, retried_from_run_id=run_id)
 
 
 def list_runs(session: Session) -> list[Run]:

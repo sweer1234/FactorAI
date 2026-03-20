@@ -46,6 +46,10 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE run ADD COLUMN updated_at DATETIME"))
             if not _column_exists(conn, "run", "observability"):
                 conn.execute(text("ALTER TABLE run ADD COLUMN observability JSON"))
+            if not _column_exists(conn, "run", "cancel_requested"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN cancel_requested BOOLEAN DEFAULT 0"))
+            if not _column_exists(conn, "run", "retried_from_run_id"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN retried_from_run_id TEXT"))
 
         # runlog 表新增字段
         if _table_exists(conn, "runlog"):
