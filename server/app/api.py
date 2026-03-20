@@ -1359,20 +1359,16 @@ def export_template_version_diff(
         *[f"- {key}: {value}" for key, value in diff.summary.items()],
         "",
         "## 新增节点",
-        *(f"- {item}" for item in diff.added_nodes) if diff.added_nodes else ("- 无",),
-        "",
-        "## 移除节点",
-        *(f"- {item}" for item in diff.removed_nodes) if diff.removed_nodes else ("- 无",),
-        "",
-        "## 变更节点",
-        *(f"- {item}" for item in diff.changed_nodes) if diff.changed_nodes else ("- 无",),
-        "",
-        "## 新增边",
-        *(f"- {item}" for item in diff.added_edges) if diff.added_edges else ("- 无",),
-        "",
-        "## 移除边",
-        *(f"- {item}" for item in diff.removed_edges) if diff.removed_edges else ("- 无",),
     ]
+    lines.extend([f"- {item}" for item in diff.added_nodes] or ["- 无"])
+    lines.extend(["", "## 移除节点"])
+    lines.extend([f"- {item}" for item in diff.removed_nodes] or ["- 无"])
+    lines.extend(["", "## 变更节点"])
+    lines.extend([f"- {item}" for item in diff.changed_nodes] or ["- 无"])
+    lines.extend(["", "## 新增边"])
+    lines.extend([f"- {item}" for item in diff.added_edges] or ["- 无"])
+    lines.extend(["", "## 移除边"])
+    lines.extend([f"- {item}" for item in diff.removed_edges] or ["- 无"])
     content = "\n".join(lines)
     filename = f"{template_id}-{from_version}-to-{to_version}-diff.md"
     return Response(
