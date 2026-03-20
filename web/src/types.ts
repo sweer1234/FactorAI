@@ -29,6 +29,7 @@ export interface Template {
   tags: string[]
   updatedAt: string
   category: string
+  ownerId?: string
   official?: boolean
   templateGroup?: string
   graph: WorkflowGraph

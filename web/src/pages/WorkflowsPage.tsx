@@ -12,7 +12,7 @@ const statusLabel = {
 export function WorkflowsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { workflows, createWorkflow, runWorkflow } = useWorkspace()
+  const { workflows, createWorkflow, runWorkflow, publishTemplate } = useWorkspace()
   const [keyword, setKeyword] = useState('')
   const [form, setForm] = useState({
     name: '',
@@ -74,6 +74,12 @@ export function WorkflowsPage() {
     navigate('/runs')
   }
 
+  const publishNow = async (workflow: Workflow) => {
+    const templateId = await publishTemplate(workflow.id)
+    if (!templateId) return
+    navigate('/templates')
+  }
+
   return (
     <>
       <section className="panel">
@@ -131,6 +137,9 @@ export function WorkflowsPage() {
                     <Link className="button-link ghost" to={`/reports/${item.id}`}>
                       报告
                     </Link>
+                    <button type="button" className="button-link ghost" onClick={() => void publishNow(item)}>
+                      发布模板
+                    </button>
                   </div>
                 </td>
               </tr>

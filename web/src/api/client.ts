@@ -70,6 +70,7 @@ interface ApiTemplate {
   tags: string[]
   updated_at: string
   category: string
+  owner_id?: string | null
   official?: boolean
   template_group?: string
   graph: WorkflowGraph
@@ -100,6 +101,21 @@ interface ApiTemplateVersionDiff {
   changed_nodes: string[]
   added_edges: string[]
   removed_edges: string[]
+}
+
+interface ApiRunBatchActionItem {
+  run_id: string
+  status: string
+  message: string
+  new_run_id?: string | null
+}
+
+interface ApiRunBatchAction {
+  action: string
+  total: number
+  success: number
+  failed: number
+  items: ApiRunBatchActionItem[]
 }
 
 interface ApiRun {
@@ -382,6 +398,7 @@ function toTemplate(item: ApiTemplate): Template {
     tags: item.tags,
     updatedAt: item.updated_at,
     category: item.category,
+    ownerId: item.owner_id ?? undefined,
     official: item.official ?? true,
     templateGroup: item.template_group ?? '官方模板',
     graph: item.graph ?? { nodes: [], edges: [] },
@@ -777,6 +794,31 @@ export async function cloneTemplate(templateId: string) {
   return toWorkflow(data)
 }
 
+export async function publishTemplateFromWorkflow(
+  workflowId: string,
+  payload?: {
+    name?: string
+    description?: string
+    tags?: string[]
+    category?: string
+    templateGroup?: string
+    official?: boolean
+  },
+) {
+  const data = await request<ApiTemplate>(`/workflows/${workflowId}/publish-template`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: payload?.name ?? null,
+      description: payload?.description ?? null,
+      tags: payload?.tags ?? [],
+      category: payload?.category ?? null,
+      template_group: payload?.templateGroup ?? null,
+      official: Boolean(payload?.official),
+    }),
+  })
+  return toTemplate(data)
+}
+
 export async function fetchTemplateVersions(templateId: string) {
   const data = await request<ApiTemplateVersion[]>(`/templates/${templateId}/versions`)
   return data.map(toTemplateVersion)
@@ -804,6 +846,25 @@ export async function fetchTemplateVersionDiff(templateId: string, fromVersion: 
   query.set('to_version', toVersion)
   const data = await request<ApiTemplateVersionDiff>(`/templates/${templateId}/versions/diff?${query.toString()}`)
   return toTemplateVersionDiff(data)
+}
+
+export async function exportTemplateVersionDiff(
+  templateId: string,
+  params: { fromVersion: string; toVersion: string; format: 'markdown' | 'csv' },
+) {
+  const query = new URLSearchParams()
+  query.set('from_version', params.fromVersion)
+  query.set('to_version', params.toVersion)
+  query.set('format', params.format)
+  const response = await fetch(`${API_BASE}/templates/${templateId}/versions/diff-export?${query.toString()}`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`API ${response.status}: ${text}`)
+  }
+  const blob = await response.blob()
+  return blob
 }
 
 export async function saveWorkflowGraph(workflowId: string, graph: WorkflowGraph) {
@@ -863,6 +924,39 @@ export async function retryRunWithStrategy(
     }),
   })
   return toRun(data)
+}
+
+export async function batchRunAction(payload: {
+  action: 'cancel' | 'retry'
+  runIds: string[]
+  retry?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number }
+}) {
+  const data = await request<ApiRunBatchAction>('/runs/batch-action', {
+    method: 'POST',
+    body: JSON.stringify({
+      action: payload.action,
+      run_ids: payload.runIds,
+      retry: payload.retry
+        ? {
+            strategy: payload.retry.strategy ?? 'immediate',
+            max_attempts: payload.retry.maxAttempts ?? 1,
+            backoff_sec: payload.retry.backoffSec ?? 0,
+          }
+        : null,
+    }),
+  })
+  return {
+    action: data.action,
+    total: data.total,
+    success: data.success,
+    failed: data.failed,
+    items: data.items.map((item) => ({
+      runId: item.run_id,
+      status: item.status,
+      message: item.message,
+      newRunId: item.new_run_id ?? undefined,
+    })),
+  }
 }
 
 export async function fetchReport(workflowId: string) {
@@ -1171,7 +1265,7 @@ export async function updateWorkflowRunPolicy(
 export async function fetchBootstrap() {
   const [workflows, templates, runs, nodeLibrary] = await Promise.all([
     fetchWorkflows(),
-    fetchTemplates({ official: true }),
+    fetchTemplates(),
     fetchRuns(),
     fetchNodeLibrary(),
   ])

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchTemplateVersionDiff, fetchTemplateVersions, rollbackTemplateVersion } from '../api/client'
+import { exportTemplateVersionDiff, fetchTemplateVersionDiff, fetchTemplateVersions, rollbackTemplateVersion } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
 import type { TemplateVersion, TemplateVersionDiff } from '../types'
 
@@ -22,6 +22,8 @@ export function TemplatesPage() {
     const key = keyword.trim().toLowerCase()
     return templates.filter((item) => {
       if (menu === 'official' && item.official === false) return false
+      if (menu === 'subscribed' && item.official !== true) return false
+      if (menu === 'created' && (item.official === true || !item.ownerId)) return false
       if (!key) return true
       return (
         item.name.toLowerCase().includes(key) ||
@@ -71,6 +73,17 @@ export function TemplatesPage() {
     } finally {
       setLoadingDiff(false)
     }
+  }
+
+  const exportDiff = async (format: 'markdown' | 'csv') => {
+    if (!selectedTemplateId || !fromVersion || !toVersion) return
+    const blob = await exportTemplateVersionDiff(selectedTemplateId, { fromVersion, toVersion, format })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${selectedTemplateId}-${fromVersion}-to-${toVersion}-diff.${format === 'csv' ? 'csv' : 'md'}`
+    anchor.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -186,6 +199,12 @@ export function TemplatesPage() {
                   </select>
                   <button type="button" className="primary ghost mini" onClick={() => void compareTemplateVersions()} disabled={loadingDiff}>
                     {loadingDiff ? '对比中…' : '版本对比'}
+                  </button>
+                  <button type="button" className="primary ghost mini" onClick={() => void exportDiff('markdown')}>
+                    导出 MD
+                  </button>
+                  <button type="button" className="primary ghost mini" onClick={() => void exportDiff('csv')}>
+                    导出 CSV
                   </button>
                 </div>
                 {versionDiff ? (

@@ -10,18 +10,37 @@ const statusLabel = {
 }
 
 export function RunsPage() {
-  const { runs, cancelRunById, retryRunById } = useWorkspace()
+  const { runs, cancelRunById, retryRunById, batchRunAction } = useWorkspace()
   const [statusFilter, setStatusFilter] = useState<'all' | 'queued' | 'running' | 'success' | 'failed' | 'cancelled'>(
     'all',
   )
   const [retryStrategy, setRetryStrategy] = useState<'immediate' | 'fixed_backoff'>('immediate')
   const [retryAttempts, setRetryAttempts] = useState(1)
   const [retryBackoffSec, setRetryBackoffSec] = useState(0)
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([])
 
   const filteredRuns = useMemo(() => {
     if (statusFilter === 'all') return runs
     return runs.filter((item) => item.status === statusFilter)
   }, [runs, statusFilter])
+
+  const toggleSelected = (runId: string, checked: boolean) => {
+    setSelectedRunIds((prev) => (checked ? Array.from(new Set([...prev, runId])) : prev.filter((item) => item !== runId)))
+  }
+
+  const toggleSelectAllFiltered = (checked: boolean) => {
+    const ids = filteredRuns.map((item) => item.id)
+    setSelectedRunIds((prev) => (checked ? Array.from(new Set([...prev, ...ids])) : prev.filter((item) => !ids.includes(item))))
+  }
+
+  const runSelection = useMemo(() => {
+    const rows = runs.filter((item) => selectedRunIds.includes(item.id))
+    return {
+      total: rows.length,
+      cancelable: rows.filter((item) => item.status === 'queued' || item.status === 'running').map((item) => item.id),
+      retryable: rows.filter((item) => item.status === 'failed' || item.status === 'cancelled').map((item) => item.id),
+    }
+  }, [runs, selectedRunIds])
 
   return (
     <section className="panel">
@@ -29,6 +48,7 @@ export function RunsPage() {
         <h3>任务队列</h3>
         <div className="header-actions">
           <span className="tag">总数 {runs.length}</span>
+          <span className="tag">已选 {runSelection.total}</span>
           <select value={retryStrategy} onChange={(event) => setRetryStrategy(event.target.value as typeof retryStrategy)}>
             <option value="immediate">重试策略: 立即</option>
             <option value="fixed_backoff">重试策略: 固定退避</option>
@@ -61,12 +81,55 @@ export function RunsPage() {
             <option value="failed">失败</option>
             <option value="cancelled">已取消</option>
           </select>
+          <button
+            type="button"
+            className="primary ghost mini"
+            disabled={runSelection.cancelable.length === 0}
+            onClick={() => void batchRunAction({ action: 'cancel', runIds: runSelection.cancelable })}
+          >
+            批量取消
+          </button>
+          <button
+            type="button"
+            className="primary ghost mini"
+            disabled={runSelection.retryable.length === 0}
+            onClick={() =>
+              void batchRunAction({
+                action: 'retry',
+                runIds: runSelection.retryable,
+                retry: {
+                  strategy: retryStrategy,
+                  maxAttempts: retryAttempts,
+                  backoffSec: retryBackoffSec,
+                },
+              })
+            }
+          >
+            批量重试
+          </button>
         </div>
       </div>
       <div className="run-list">
+        <article className="run-card">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={filteredRuns.length > 0 && filteredRuns.every((item) => selectedRunIds.includes(item.id))}
+              onChange={(event) => toggleSelectAllFiltered(event.target.checked)}
+            />
+            全选当前筛选列表
+          </label>
+        </article>
         {filteredRuns.map((run) => (
           <article key={run.id} className="run-card">
             <div className="run-title">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedRunIds.includes(run.id)}
+                  onChange={(event) => toggleSelected(run.id, event.target.checked)}
+                />
+              </label>
               <h4>{run.workflowName}</h4>
               <span className={`badge ${run.status}`}>{statusLabel[run.status]}</span>
             </div>

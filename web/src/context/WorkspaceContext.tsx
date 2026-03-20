@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useEffect, useState, type ReactNode } from 'react'
 import {
+  batchRunAction as apiBatchRunAction,
   cancelRun as apiCancelRun,
   applyWorkflowContractFixes,
   cloneTemplate as apiCloneTemplate,
@@ -14,6 +15,7 @@ import {
   fetchRuns,
   fetchTemplates,
   fetchWorkflows,
+  publishTemplateFromWorkflow,
   rollbackWorkflowContractFixes,
   retryRun as apiRetryRun,
   retryRunWithStrategy,
@@ -67,6 +69,7 @@ export interface WorkspaceStore {
     graph?: WorkflowGraph
   }) => Promise<string>
   cloneTemplate: (templateId: string) => Promise<string | null>
+  publishTemplate: (workflowId: string) => Promise<string | null>
   saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => Promise<void>
   saveWorkflowDraft: (workflowId: string) => Promise<void>
   runWorkflow: (workflowId: string) => Promise<void>
@@ -82,6 +85,11 @@ export interface WorkspaceStore {
     runId: string,
     options?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
   ) => Promise<void>
+  batchRunAction: (payload: {
+    action: 'cancel' | 'retry'
+    runIds: string[]
+    retry?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number }
+  }) => Promise<{ total: number; success: number; failed: number }>
   notice: string | null
 }
 
@@ -123,7 +131,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }
 
   const refreshTemplates = async () => {
-    const list = await fetchTemplates({ official: true })
+    const list = await fetchTemplates()
     setTemplates(list)
   }
 
@@ -216,6 +224,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setWorkflows((prev) => [created, ...prev])
     updateNotice(`模板复制完成：${created.name}`)
     return created.id
+  }
+
+  const publishTemplate: WorkspaceStore['publishTemplate'] = async (workflowId) => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法发布模板')
+      return null
+    }
+    const template = await publishTemplateFromWorkflow(workflowId)
+    setTemplates((prev) => [template, ...prev])
+    updateNotice(`已发布模板：${template.name}`)
+    return template.id
   }
 
   const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = async (workflowId, graph) => {
@@ -348,6 +367,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     updateNotice(`已重试任务：${runId.slice(-8)}`)
   }
 
+  const batchRunAction: WorkspaceStore['batchRunAction'] = async (payload) => {
+    if (!backendOnline) return { total: 0, success: 0, failed: 0 }
+    const result = await apiBatchRunAction(payload)
+    await refreshRuns()
+    await refreshWorkflows()
+    updateNotice(`批量${payload.action === 'cancel' ? '取消' : '重试'}完成：${result.success}/${result.total}`)
+    return { total: result.total, success: result.success, failed: result.failed }
+  }
+
   const value: WorkspaceStore = {
     workflows,
     templates,
@@ -366,6 +394,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     getNodeStates,
     createWorkflow,
     cloneTemplate,
+    publishTemplate,
     saveWorkflowGraph,
     saveWorkflowDraft,
     runWorkflow,
@@ -378,6 +407,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     getGraphRevisions,
     cancelRunById,
     retryRunById,
+    batchRunAction,
     notice,
   }
 
