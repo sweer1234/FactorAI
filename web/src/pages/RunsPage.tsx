@@ -14,6 +14,9 @@ export function RunsPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'queued' | 'running' | 'success' | 'failed' | 'cancelled'>(
     'all',
   )
+  const [retryStrategy, setRetryStrategy] = useState<'immediate' | 'fixed_backoff'>('immediate')
+  const [retryAttempts, setRetryAttempts] = useState(1)
+  const [retryBackoffSec, setRetryBackoffSec] = useState(0)
 
   const filteredRuns = useMemo(() => {
     if (statusFilter === 'all') return runs
@@ -26,6 +29,30 @@ export function RunsPage() {
         <h3>任务队列</h3>
         <div className="header-actions">
           <span className="tag">总数 {runs.length}</span>
+          <select value={retryStrategy} onChange={(event) => setRetryStrategy(event.target.value as typeof retryStrategy)}>
+            <option value="immediate">重试策略: 立即</option>
+            <option value="fixed_backoff">重试策略: 固定退避</option>
+          </select>
+          <input
+            className="search-input"
+            style={{ width: 120 }}
+            type="number"
+            min={1}
+            max={5}
+            value={retryAttempts}
+            onChange={(event) => setRetryAttempts(Number(event.target.value || 1))}
+            placeholder="最大尝试"
+          />
+          <input
+            className="search-input"
+            style={{ width: 120 }}
+            type="number"
+            min={0}
+            max={300}
+            value={retryBackoffSec}
+            onChange={(event) => setRetryBackoffSec(Number(event.target.value || 0))}
+            placeholder="退避秒数"
+          />
           <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
             <option value="all">全部状态</option>
             <option value="queued">排队中</option>
@@ -54,6 +81,8 @@ export function RunsPage() {
               <span>任务ID: {run.id}</span>
               <span>耗时: {run.duration}</span>
               <span>开始时间: {run.createdAt}</span>
+              {run.retryAttempt ? <span>重试尝试: {run.retryAttempt}/{run.retryMaxAttempts ?? 1}</span> : null}
+              {run.retriedFromRunId ? <span>来源任务: {run.retriedFromRunId.slice(-8)}</span> : null}
             </div>
             <div className="table-actions">
               {(run.status === 'queued' || run.status === 'running') && (
@@ -62,7 +91,17 @@ export function RunsPage() {
                 </button>
               )}
               {(run.status === 'failed' || run.status === 'cancelled') && (
-                <button type="button" className="button-link ghost" onClick={() => void retryRunById(run.id)}>
+                <button
+                  type="button"
+                  className="button-link ghost"
+                  onClick={() =>
+                    void retryRunById(run.id, {
+                      strategy: retryStrategy,
+                      maxAttempts: retryAttempts,
+                      backoffSec: retryBackoffSec,
+                    })
+                  }
+                >
                   重试
                 </button>
               )}

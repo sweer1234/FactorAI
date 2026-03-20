@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchTemplateVersions, rollbackTemplateVersion } from '../api/client'
+import { fetchTemplateVersionDiff, fetchTemplateVersions, rollbackTemplateVersion } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { TemplateVersion } from '../types'
+import type { TemplateVersion, TemplateVersionDiff } from '../types'
 
 export function TemplatesPage() {
   const navigate = useNavigate()
@@ -13,6 +13,10 @@ export function TemplatesPage() {
   const [versionRows, setVersionRows] = useState<TemplateVersion[]>([])
   const [loadingVersions, setLoadingVersions] = useState(false)
   const [rollingBackVersion, setRollingBackVersion] = useState(false)
+  const [fromVersion, setFromVersion] = useState('')
+  const [toVersion, setToVersion] = useState('')
+  const [versionDiff, setVersionDiff] = useState<TemplateVersionDiff | null>(null)
+  const [loadingDiff, setLoadingDiff] = useState(false)
 
   const filtered = useMemo(() => {
     const key = keyword.trim().toLowerCase()
@@ -40,6 +44,9 @@ export function TemplatesPage() {
     try {
       const rows = await fetchTemplateVersions(templateId)
       setVersionRows(rows)
+      setFromVersion(rows[rows.length - 1]?.version ?? '')
+      setToVersion(rows[0]?.version ?? '')
+      setVersionDiff(null)
     } finally {
       setLoadingVersions(false)
     }
@@ -52,6 +59,17 @@ export function TemplatesPage() {
       setVersionRows((prev) => [result.createdVersion, ...prev])
     } finally {
       setRollingBackVersion(false)
+    }
+  }
+
+  const compareTemplateVersions = async () => {
+    if (!selectedTemplateId || !fromVersion || !toVersion) return
+    setLoadingDiff(true)
+    try {
+      const diff = await fetchTemplateVersionDiff(selectedTemplateId, fromVersion, toVersion)
+      setVersionDiff(diff)
+    } finally {
+      setLoadingDiff(false)
     }
   }
 
@@ -150,38 +168,81 @@ export function TemplatesPage() {
             {loadingVersions ? (
               <p className="muted">版本加载中…</p>
             ) : (
-              <div className="compare-table">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>版本</th>
-                      <th>说明</th>
-                      <th>时间</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              <>
+                <div className="header-actions" style={{ marginBottom: 8 }}>
+                  <select value={fromVersion} onChange={(event) => setFromVersion(event.target.value)}>
                     {versionRows.map((row) => (
-                      <tr key={row.id}>
-                        <td>{row.version}</td>
-                        <td>{row.changelog || '--'}</td>
-                        <td>{row.createdAt}</td>
-                        <td>
-                          <button
-                            type="button"
-                            className="button-link ghost"
-                            disabled={rollingBackVersion}
-                            onClick={() => void onRollbackTemplateVersion(selectedTemplateId, row.version)}
-                          >
-                            {rollingBackVersion ? '回滚中…' : '回滚到此版本'}
-                          </button>
-                        </td>
-                      </tr>
+                      <option key={`from-${row.id}`} value={row.version}>
+                        基准 {row.version}
+                      </option>
                     ))}
-                  </tbody>
-                </table>
-                {versionRows.length === 0 ? <p className="muted">该模板暂无版本记录</p> : null}
-              </div>
+                  </select>
+                  <select value={toVersion} onChange={(event) => setToVersion(event.target.value)}>
+                    {versionRows.map((row) => (
+                      <option key={`to-${row.id}`} value={row.version}>
+                        目标 {row.version}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" className="primary ghost mini" onClick={() => void compareTemplateVersions()} disabled={loadingDiff}>
+                    {loadingDiff ? '对比中…' : '版本对比'}
+                  </button>
+                </div>
+                {versionDiff ? (
+                  <div className="alert-count-grid" style={{ marginBottom: 8 }}>
+                    <article>
+                      <span>新增节点</span>
+                      <strong>{versionDiff.summary.added_nodes ?? 0}</strong>
+                    </article>
+                    <article>
+                      <span>移除节点</span>
+                      <strong>{versionDiff.summary.removed_nodes ?? 0}</strong>
+                    </article>
+                    <article>
+                      <span>变更节点</span>
+                      <strong>{versionDiff.summary.changed_nodes ?? 0}</strong>
+                    </article>
+                    <article>
+                      <span>边变更</span>
+                      <strong>
+                        +{versionDiff.summary.added_edges ?? 0} / -{versionDiff.summary.removed_edges ?? 0}
+                      </strong>
+                    </article>
+                  </div>
+                ) : null}
+                <div className="compare-table">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>版本</th>
+                        <th>说明</th>
+                        <th>时间</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {versionRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.version}</td>
+                          <td>{row.changelog || '--'}</td>
+                          <td>{row.createdAt}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button-link ghost"
+                              disabled={rollingBackVersion}
+                              onClick={() => void onRollbackTemplateVersion(selectedTemplateId, row.version)}
+                            >
+                              {rollingBackVersion ? '回滚中…' : '回滚到此版本'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {versionRows.length === 0 ? <p className="muted">该模板暂无版本记录</p> : null}
+                </div>
+              </>
             )}
           </section>
         ) : null}

@@ -37,6 +37,18 @@ export interface TemplateVersion {
   createdAt: string
 }
 
+export interface TemplateVersionDiff {
+  templateId: string
+  fromVersion: string
+  toVersion: string
+  summary: Record<string, number>
+  addedNodes: string[]
+  removedNodes: string[]
+  changedNodes: string[]
+  addedEdges: string[]
+  removedEdges: string[]
+}
+
 export interface NodeDefinition {
   id: string
   name: string
@@ -99,6 +111,11 @@ export interface RunRecord {
   observability?: Record<string, string | number | boolean | null | object | unknown[]>
   cancelRequested?: boolean
   retriedFromRunId?: string
+  retryOriginRunId?: string
+  retryAttempt?: number
+  retryMaxAttempts?: number
+  retryStrategy?: string
+  retryBackoffSec?: number
 }
 
 export interface RunLog {

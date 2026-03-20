@@ -20,6 +20,7 @@ import type {
   SloTemplate,
   SloView,
   Template,
+  TemplateVersionDiff,
   TemplateVersion,
   Workflow,
   WorkflowGraph,
@@ -83,6 +84,18 @@ interface ApiTemplateVersionRollback {
   created_version: ApiTemplateVersion
 }
 
+interface ApiTemplateVersionDiff {
+  template_id: string
+  from_version: string
+  to_version: string
+  summary: Record<string, number>
+  added_nodes: string[]
+  removed_nodes: string[]
+  changed_nodes: string[]
+  added_edges: string[]
+  removed_edges: string[]
+}
+
 interface ApiRun {
   id: string
   workflow_id: string
@@ -95,6 +108,11 @@ interface ApiRun {
   observability?: Record<string, string | number | boolean | null | object | unknown[]>
   cancel_requested?: boolean
   retried_from_run_id?: string | null
+  retry_origin_run_id?: string | null
+  retry_attempt?: number
+  retry_max_attempts?: number
+  retry_strategy?: string
+  retry_backoff_sec?: number
 }
 
 interface ApiRunLog {
@@ -362,6 +380,20 @@ function toTemplateVersion(item: ApiTemplateVersion): TemplateVersion {
   }
 }
 
+function toTemplateVersionDiff(item: ApiTemplateVersionDiff): TemplateVersionDiff {
+  return {
+    templateId: item.template_id,
+    fromVersion: item.from_version,
+    toVersion: item.to_version,
+    summary: item.summary ?? {},
+    addedNodes: item.added_nodes ?? [],
+    removedNodes: item.removed_nodes ?? [],
+    changedNodes: item.changed_nodes ?? [],
+    addedEdges: item.added_edges ?? [],
+    removedEdges: item.removed_edges ?? [],
+  }
+}
+
 function toRun(item: ApiRun): RunRecord {
   return {
     id: item.id,
@@ -375,6 +407,11 @@ function toRun(item: ApiRun): RunRecord {
     observability: item.observability ?? undefined,
     cancelRequested: item.cancel_requested ?? undefined,
     retriedFromRunId: item.retried_from_run_id ?? undefined,
+    retryOriginRunId: item.retry_origin_run_id ?? undefined,
+    retryAttempt: item.retry_attempt ?? undefined,
+    retryMaxAttempts: item.retry_max_attempts ?? undefined,
+    retryStrategy: item.retry_strategy ?? undefined,
+    retryBackoffSec: item.retry_backoff_sec ?? undefined,
   }
 }
 
@@ -733,6 +770,14 @@ export async function rollbackTemplateVersion(templateId: string, payload: { ver
   }
 }
 
+export async function fetchTemplateVersionDiff(templateId: string, fromVersion: string, toVersion: string) {
+  const query = new URLSearchParams()
+  query.set('from_version', fromVersion)
+  query.set('to_version', toVersion)
+  const data = await request<ApiTemplateVersionDiff>(`/templates/${templateId}/versions/diff?${query.toString()}`)
+  return toTemplateVersionDiff(data)
+}
+
 export async function saveWorkflowGraph(workflowId: string, graph: WorkflowGraph) {
   const data = await request<ApiWorkflow>(`/workflows/${workflowId}/graph`, {
     method: 'PUT',
@@ -773,6 +818,21 @@ export async function cancelRun(runId: string) {
 export async function retryRun(runId: string) {
   const data = await request<ApiRun>(`/runs/${runId}/retry`, {
     method: 'POST',
+  })
+  return toRun(data)
+}
+
+export async function retryRunWithStrategy(
+  runId: string,
+  payload: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
+) {
+  const data = await request<ApiRun>(`/runs/${runId}/retry`, {
+    method: 'POST',
+    body: JSON.stringify({
+      strategy: payload.strategy ?? 'immediate',
+      max_attempts: payload.maxAttempts ?? 1,
+      backoff_sec: payload.backoffSec ?? 0,
+    }),
   })
   return toRun(data)
 }

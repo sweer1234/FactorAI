@@ -16,6 +16,7 @@ import {
   fetchWorkflows,
   rollbackWorkflowContractFixes,
   retryRun as apiRetryRun,
+  retryRunWithStrategy,
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
   saveWorkflowGraph as apiSaveWorkflowGraph,
@@ -77,7 +78,10 @@ export interface WorkspaceStore {
   rollbackContractFixes: (workflowId: string, revisionId?: string) => Promise<ContractFixRollbackResult | null>
   getGraphRevisions: (workflowId: string, source?: string) => Promise<GraphRevision[]>
   cancelRunById: (runId: string) => Promise<void>
-  retryRunById: (runId: string) => Promise<void>
+  retryRunById: (
+    runId: string,
+    options?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
+  ) => Promise<void>
   notice: string | null
 }
 
@@ -336,9 +340,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     updateNotice(`已请求取消任务：${runId.slice(-8)}`)
   }
 
-  const retryRunById: WorkspaceStore['retryRunById'] = async (runId) => {
+  const retryRunById: WorkspaceStore['retryRunById'] = async (runId, options) => {
     if (!backendOnline) return
-    const created = await apiRetryRun(runId)
+    const created = options ? await retryRunWithStrategy(runId, options) : await apiRetryRun(runId)
     setRuns((prev) => [created, ...prev])
     await refreshWorkflows()
     updateNotice(`已重试任务：${runId.slice(-8)}`)
