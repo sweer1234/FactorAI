@@ -20,11 +20,25 @@ import type {
   SloTemplate,
   SloView,
   Template,
+  TemplateVersion,
   Workflow,
   WorkflowGraph,
 } from '../types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'
+const DEFAULT_API_TOKEN = import.meta.env.VITE_API_TOKEN || 'dev-admin-token'
+const API_TOKEN_STORAGE_KEY = 'factorai_api_token'
+
+function getApiToken() {
+  if (typeof window === 'undefined') return DEFAULT_API_TOKEN
+  const localToken = window.localStorage.getItem(API_TOKEN_STORAGE_KEY)
+  return localToken || DEFAULT_API_TOKEN
+}
+
+function authHeaders() {
+  const token = getApiToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 interface ApiWorkflow {
   id: string
@@ -53,6 +67,21 @@ interface ApiTemplate {
   graph: WorkflowGraph
 }
 
+interface ApiTemplateVersion {
+  id: string
+  template_id: string
+  version: string
+  changelog: string
+  graph: WorkflowGraph
+  created_at: string
+}
+
+interface ApiTemplateVersionRollback {
+  template: ApiTemplate
+  restored_version: ApiTemplateVersion
+  created_version: ApiTemplateVersion
+}
+
 interface ApiRun {
   id: string
   workflow_id: string
@@ -63,6 +92,8 @@ interface ApiRun {
   message: string
   logs: string[]
   observability?: Record<string, string | number | boolean | null | object | unknown[]>
+  cancel_requested?: boolean
+  retried_from_run_id?: string | null
 }
 
 interface ApiRunLog {
@@ -319,6 +350,17 @@ function toTemplate(item: ApiTemplate): Template {
   }
 }
 
+function toTemplateVersion(item: ApiTemplateVersion): TemplateVersion {
+  return {
+    id: item.id,
+    templateId: item.template_id,
+    version: item.version,
+    changelog: item.changelog,
+    graph: item.graph ?? { nodes: [], edges: [] },
+    createdAt: item.created_at,
+  }
+}
+
 function toRun(item: ApiRun): RunRecord {
   return {
     id: item.id,
@@ -330,6 +372,8 @@ function toRun(item: ApiRun): RunRecord {
     message: item.message,
     logs: item.logs,
     observability: item.observability ?? undefined,
+    cancelRequested: item.cancel_requested ?? undefined,
+    retriedFromRunId: item.retried_from_run_id ?? undefined,
   }
 }
 
@@ -598,6 +642,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders(),
       ...(init?.headers || {}),
     },
   })
@@ -665,6 +710,27 @@ export async function cloneTemplate(templateId: string) {
   return toWorkflow(data)
 }
 
+export async function fetchTemplateVersions(templateId: string) {
+  const data = await request<ApiTemplateVersion[]>(`/templates/${templateId}/versions`)
+  return data.map(toTemplateVersion)
+}
+
+export async function rollbackTemplateVersion(templateId: string, payload: { version?: string; versionId?: string }) {
+  const data = await request<ApiTemplateVersionRollback>(`/templates/${templateId}/versions/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({
+      version: payload.version ?? null,
+      version_id: payload.versionId ?? null,
+      changelog: `rollback by ui to ${payload.version ?? payload.versionId ?? 'latest'}`,
+    }),
+  })
+  return {
+    template: toTemplate(data.template),
+    restoredVersion: toTemplateVersion(data.restored_version),
+    createdVersion: toTemplateVersion(data.created_version),
+  }
+}
+
 export async function saveWorkflowGraph(workflowId: string, graph: WorkflowGraph) {
   const data = await request<ApiWorkflow>(`/workflows/${workflowId}/graph`, {
     method: 'PUT',
@@ -690,6 +756,20 @@ export async function saveWorkflowDraft(workflowId: string) {
 
 export async function runWorkflow(workflowId: string) {
   const data = await request<ApiRun>(`/workflows/${workflowId}/run`, {
+    method: 'POST',
+  })
+  return toRun(data)
+}
+
+export async function cancelRun(runId: string) {
+  const data = await request<ApiRun>(`/runs/${runId}/cancel`, {
+    method: 'POST',
+  })
+  return toRun(data)
+}
+
+export async function retryRun(runId: string) {
+  const data = await request<ApiRun>(`/runs/${runId}/retry`, {
     method: 'POST',
   })
   return toRun(data)
@@ -742,6 +822,9 @@ export async function uploadArtifact(payload: {
 
   const response = await fetch(`${API_BASE}/artifacts/upload`, {
     method: 'POST',
+    headers: {
+      ...authHeaders(),
+    },
     body: form,
   })
   if (!response.ok) {

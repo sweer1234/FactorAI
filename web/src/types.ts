@@ -1,5 +1,5 @@
 export type WorkflowStatus = 'draft' | 'running' | 'published'
-export type RunStatus = 'queued' | 'running' | 'success' | 'failed'
+export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
 
 export interface Workflow {
   id: string
@@ -26,6 +26,15 @@ export interface Template {
   official?: boolean
   templateGroup?: string
   graph: WorkflowGraph
+}
+
+export interface TemplateVersion {
+  id: string
+  templateId: string
+  version: string
+  changelog: string
+  graph: WorkflowGraph
+  createdAt: string
 }
 
 export interface NodeDefinition {
@@ -88,6 +97,8 @@ export interface RunRecord {
   message: string
   logs?: string[]
   observability?: Record<string, string | number | boolean | null | object | unknown[]>
+  cancelRequested?: boolean
+  retriedFromRunId?: string
 }
 
 export interface RunLog {

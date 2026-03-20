@@ -1,12 +1,18 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { fetchTemplateVersions, rollbackTemplateVersion } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
+import type { TemplateVersion } from '../types'
 
 export function TemplatesPage() {
   const navigate = useNavigate()
   const { templates, cloneTemplate } = useWorkspace()
   const [keyword, setKeyword] = useState('')
   const [menu, setMenu] = useState<'official' | 'subscribed' | 'created'>('official')
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
+  const [versionRows, setVersionRows] = useState<TemplateVersion[]>([])
+  const [loadingVersions, setLoadingVersions] = useState(false)
+  const [rollingBackVersion, setRollingBackVersion] = useState(false)
 
   const filtered = useMemo(() => {
     const key = keyword.trim().toLowerCase()
@@ -26,6 +32,27 @@ export function TemplatesPage() {
     const workflowId = await cloneTemplate(templateId)
     if (!workflowId) return
     navigate(`/editor/${workflowId}`)
+  }
+
+  const loadTemplateVersions = async (templateId: string) => {
+    setSelectedTemplateId(templateId)
+    setLoadingVersions(true)
+    try {
+      const rows = await fetchTemplateVersions(templateId)
+      setVersionRows(rows)
+    } finally {
+      setLoadingVersions(false)
+    }
+  }
+
+  const onRollbackTemplateVersion = async (templateId: string, version: string) => {
+    setRollingBackVersion(true)
+    try {
+      const result = await rollbackTemplateVersion(templateId, { version })
+      setVersionRows((prev) => [result.createdVersion, ...prev])
+    } finally {
+      setRollingBackVersion(false)
+    }
   }
 
   return (
@@ -103,6 +130,9 @@ export function TemplatesPage() {
                     >
                       仿作
                     </button>
+                    <button type="button" className="button-link ghost" onClick={() => void loadTemplateVersions(item.id)}>
+                      版本
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -110,6 +140,51 @@ export function TemplatesPage() {
           </tbody>
         </table>
         {filtered.length === 0 ? <p className="muted">当前分类暂无模板，请切换菜单或调整关键词。</p> : null}
+
+        {selectedTemplateId ? (
+          <section className="panel">
+            <div className="panel-header">
+              <h3>模板版本 · {selectedTemplateId}</h3>
+              <span className="tag">{loadingVersions ? '加载中' : versionRows.length}</span>
+            </div>
+            {loadingVersions ? (
+              <p className="muted">版本加载中…</p>
+            ) : (
+              <div className="compare-table">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>版本</th>
+                      <th>说明</th>
+                      <th>时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {versionRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.version}</td>
+                        <td>{row.changelog || '--'}</td>
+                        <td>{row.createdAt}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="button-link ghost"
+                            disabled={rollingBackVersion}
+                            onClick={() => void onRollbackTemplateVersion(selectedTemplateId, row.version)}
+                          >
+                            {rollingBackVersion ? '回滚中…' : '回滚到此版本'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {versionRows.length === 0 ? <p className="muted">该模板暂无版本记录</p> : null}
+              </div>
+            )}
+          </section>
+        ) : null}
       </div>
     </section>
   )

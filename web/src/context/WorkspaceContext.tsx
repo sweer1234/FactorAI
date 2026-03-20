@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useEffect, useState, type ReactNode } from 'react'
 import {
+  cancelRun as apiCancelRun,
   applyWorkflowContractFixes,
   cloneTemplate as apiCloneTemplate,
   createWorkflow as apiCreateWorkflow,
@@ -14,6 +15,7 @@ import {
   fetchTemplates,
   fetchWorkflows,
   rollbackWorkflowContractFixes,
+  retryRun as apiRetryRun,
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
   saveWorkflowGraph as apiSaveWorkflowGraph,
@@ -74,6 +76,8 @@ export interface WorkspaceStore {
   applyContractFixes: (workflowId: string) => Promise<ContractFixApplyResult | null>
   rollbackContractFixes: (workflowId: string, revisionId?: string) => Promise<ContractFixRollbackResult | null>
   getGraphRevisions: (workflowId: string, source?: string) => Promise<GraphRevision[]>
+  cancelRunById: (runId: string) => Promise<void>
+  retryRunById: (runId: string) => Promise<void>
   notice: string | null
 }
 
@@ -260,7 +264,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       ])
       const latest = latestRuns.find((item) => item.workflowId === workflowId) ?? run
       await refreshRunDetails(latest.id)
-      if (round < 20 && latest.status !== 'success' && latest.status !== 'failed') {
+      if (round < 20 && latest.status !== 'success' && latest.status !== 'failed' && latest.status !== 'cancelled') {
         window.setTimeout(poll, 1200)
       }
     }
@@ -324,6 +328,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return fetchWorkflowGraphRevisions(workflowId, { source, limit: 30 })
   }
 
+  const cancelRunById: WorkspaceStore['cancelRunById'] = async (runId) => {
+    if (!backendOnline) return
+    const updated = await apiCancelRun(runId)
+    setRuns((prev) => prev.map((item) => (item.id === runId ? updated : item)))
+    await refreshWorkflows()
+    updateNotice(`已请求取消任务：${runId.slice(-8)}`)
+  }
+
+  const retryRunById: WorkspaceStore['retryRunById'] = async (runId) => {
+    if (!backendOnline) return
+    const created = await apiRetryRun(runId)
+    setRuns((prev) => [created, ...prev])
+    await refreshWorkflows()
+    updateNotice(`已重试任务：${runId.slice(-8)}`)
+  }
+
   const value: WorkspaceStore = {
     workflows,
     templates,
@@ -352,6 +372,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     applyContractFixes: applyContractFixesForWorkflow,
     rollbackContractFixes: rollbackContractFixesForWorkflow,
     getGraphRevisions,
+    cancelRunById,
+    retryRunById,
     notice,
   }
 

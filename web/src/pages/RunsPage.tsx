@@ -6,11 +6,14 @@ const statusLabel = {
   running: '运行中',
   success: '成功',
   failed: '失败',
+  cancelled: '已取消',
 }
 
 export function RunsPage() {
-  const { runs } = useWorkspace()
-  const [statusFilter, setStatusFilter] = useState<'all' | 'queued' | 'running' | 'success' | 'failed'>('all')
+  const { runs, cancelRunById, retryRunById } = useWorkspace()
+  const [statusFilter, setStatusFilter] = useState<'all' | 'queued' | 'running' | 'success' | 'failed' | 'cancelled'>(
+    'all',
+  )
 
   const filteredRuns = useMemo(() => {
     if (statusFilter === 'all') return runs
@@ -29,6 +32,7 @@ export function RunsPage() {
             <option value="running">运行中</option>
             <option value="success">成功</option>
             <option value="failed">失败</option>
+            <option value="cancelled">已取消</option>
           </select>
         </div>
       </div>
@@ -50,6 +54,18 @@ export function RunsPage() {
               <span>任务ID: {run.id}</span>
               <span>耗时: {run.duration}</span>
               <span>开始时间: {run.createdAt}</span>
+            </div>
+            <div className="table-actions">
+              {(run.status === 'queued' || run.status === 'running') && (
+                <button type="button" className="button-link ghost" onClick={() => void cancelRunById(run.id)}>
+                  取消
+                </button>
+              )}
+              {(run.status === 'failed' || run.status === 'cancelled') && (
+                <button type="button" className="button-link ghost" onClick={() => void retryRunById(run.id)}>
+                  重试
+                </button>
+              )}
             </div>
           </article>
         ))}
