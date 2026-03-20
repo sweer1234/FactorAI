@@ -22,6 +22,8 @@ import {
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
   saveWorkflowGraph as apiSaveWorkflowGraph,
+  subscribeTemplate as apiSubscribeTemplate,
+  unsubscribeTemplate as apiUnsubscribeTemplate,
   uploadArtifact,
 } from '../api/client'
 import {
@@ -70,6 +72,7 @@ export interface WorkspaceStore {
   }) => Promise<string>
   cloneTemplate: (templateId: string) => Promise<string | null>
   publishTemplate: (workflowId: string) => Promise<string | null>
+  toggleTemplateSubscription: (templateId: string, subscribe: boolean) => Promise<void>
   saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => Promise<void>
   saveWorkflowDraft: (workflowId: string) => Promise<void>
   runWorkflow: (workflowId: string) => Promise<void>
@@ -237,6 +240,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return template.id
   }
 
+  const toggleTemplateSubscription: WorkspaceStore['toggleTemplateSubscription'] = async (templateId, subscribe) => {
+    if (!backendOnline) return
+    const updated = subscribe ? await apiSubscribeTemplate(templateId) : await apiUnsubscribeTemplate(templateId)
+    setTemplates((prev) => prev.map((item) => (item.id === templateId ? { ...item, ...updated } : item)))
+    updateNotice(subscribe ? '已订阅模板' : '已取消订阅')
+  }
+
   const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = async (workflowId, graph) => {
     setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? { ...item, graph } : item)))
     if (!backendOnline) return
@@ -395,6 +405,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     createWorkflow,
     cloneTemplate,
     publishTemplate,
+    toggleTemplateSubscription,
     saveWorkflowGraph,
     saveWorkflowDraft,
     runWorkflow,

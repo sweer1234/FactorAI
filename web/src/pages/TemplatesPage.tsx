@@ -6,7 +6,7 @@ import type { TemplateVersion, TemplateVersionDiff } from '../types'
 
 export function TemplatesPage() {
   const navigate = useNavigate()
-  const { templates, cloneTemplate } = useWorkspace()
+  const { templates, cloneTemplate, toggleTemplateSubscription } = useWorkspace()
   const [keyword, setKeyword] = useState('')
   const [menu, setMenu] = useState<'official' | 'subscribed' | 'created'>('official')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
@@ -22,8 +22,8 @@ export function TemplatesPage() {
     const key = keyword.trim().toLowerCase()
     return templates.filter((item) => {
       if (menu === 'official' && item.official === false) return false
-      if (menu === 'subscribed' && item.official !== true) return false
-      if (menu === 'created' && (item.official === true || !item.ownerId)) return false
+      if (menu === 'subscribed' && item.isSubscribed !== true) return false
+      if (menu === 'created' && !item.ownerId) return false
       if (!key) return true
       return (
         item.name.toLowerCase().includes(key) ||
@@ -160,6 +160,13 @@ export function TemplatesPage() {
                       onClick={() => void handleUseTemplate(item.id)}
                     >
                       仿作
+                    </button>
+                    <button
+                      type="button"
+                      className="button-link ghost"
+                      onClick={() => void toggleTemplateSubscription(item.id, item.isSubscribed !== true)}
+                    >
+                      {item.isSubscribed ? '取消订阅' : '订阅'}
                     </button>
                     <button type="button" className="button-link ghost" onClick={() => void loadTemplateVersions(item.id)}>
                       版本

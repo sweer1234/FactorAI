@@ -73,6 +73,8 @@ interface ApiTemplate {
   owner_id?: string | null
   official?: boolean
   template_group?: string
+  is_subscribed?: boolean
+  subscribed_count?: number
   graph: WorkflowGraph
 }
 
@@ -401,6 +403,8 @@ function toTemplate(item: ApiTemplate): Template {
     ownerId: item.owner_id ?? undefined,
     official: item.official ?? true,
     templateGroup: item.template_group ?? '官方模板',
+    isSubscribed: item.is_subscribed ?? false,
+    subscribedCount: Number(item.subscribed_count ?? 0),
     graph: item.graph ?? { nodes: [], edges: [] },
   }
 }
@@ -743,9 +747,11 @@ export async function fetchWorkflows() {
   return data.map(toWorkflow)
 }
 
-export async function fetchTemplates(params?: { official?: boolean; keyword?: string }) {
+export async function fetchTemplates(params?: { official?: boolean; subscribed?: boolean; owned?: boolean; keyword?: string }) {
   const query = new URLSearchParams()
   if (typeof params?.official === 'boolean') query.set('official', String(params.official))
+  if (typeof params?.subscribed === 'boolean') query.set('subscribed', String(params.subscribed))
+  if (typeof params?.owned === 'boolean') query.set('owned', String(params.owned))
   if (params?.keyword) query.set('keyword', params.keyword)
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiTemplate[]>(`/templates${suffix}`)
@@ -815,6 +821,20 @@ export async function publishTemplateFromWorkflow(
       template_group: payload?.templateGroup ?? null,
       official: Boolean(payload?.official),
     }),
+  })
+  return toTemplate(data)
+}
+
+export async function subscribeTemplate(templateId: string) {
+  const data = await request<ApiTemplate>(`/templates/${templateId}/subscribe`, {
+    method: 'POST',
+  })
+  return toTemplate(data)
+}
+
+export async function unsubscribeTemplate(templateId: string) {
+  const data = await request<ApiTemplate>(`/templates/${templateId}/subscribe`, {
+    method: 'DELETE',
   })
   return toTemplate(data)
 }
