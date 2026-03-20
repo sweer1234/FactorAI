@@ -205,6 +205,11 @@ interface ApiWorkflowInsights {
   latest_run_id?: string | null
   latest_summary: Record<string, string | number | boolean | null>
   thresholds: Record<string, number>
+  suggested_slo_config?: {
+    profile?: string | null
+    overrides?: Record<string, number>
+    reason?: string | null
+  }
   recommendations: ApiObservabilityRecommendation[]
 }
 
@@ -445,6 +450,11 @@ function toWorkflowInsights(item: ApiWorkflowInsights): WorkflowInsights {
     latestRunId: item.latest_run_id ?? undefined,
     latestSummary: item.latest_summary,
     thresholds: item.thresholds,
+    suggestedSloConfig: {
+      profile: item.suggested_slo_config?.profile ?? undefined,
+      overrides: item.suggested_slo_config?.overrides ?? {},
+      reason: item.suggested_slo_config?.reason ?? undefined,
+    },
     recommendations: item.recommendations.map((rec) => ({
       code: rec.code,
       level: rec.level,

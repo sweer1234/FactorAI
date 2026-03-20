@@ -308,6 +308,42 @@ def _build_insight_recommendations(
     return recommendations
 
 
+def _build_suggested_slo_config(
+    *,
+    pass_rate: float,
+    latest_summary: dict[str, int | float | str | None],
+    thresholds: dict[str, int],
+) -> dict[str, Any]:
+    overrides: dict[str, int] = {}
+    latest_p95 = int(latest_summary.get("p95_node_duration_ms", 0) or 0)
+    latest_warn = int(latest_summary.get("warn_logs", 0) or 0)
+    latest_error = int(latest_summary.get("error_logs", 0) or 0)
+    latest_failed = int(latest_summary.get("failed_nodes", 0) or 0)
+
+    current_p95 = int(thresholds.get("p95_node_duration_ms", 800))
+    current_warn = int(thresholds.get("warn_logs", 20))
+    current_error = int(thresholds.get("error_logs", 0))
+
+    # 通过率低但失败节点不高时，优先放宽噪声阈值，降低误报。
+    if pass_rate < 0.75 and latest_failed == 0:
+        if latest_p95 > current_p95:
+            overrides["p95_node_duration_ms"] = max(current_p95, int(latest_p95 * 1.15))
+        if latest_warn > current_warn:
+            overrides["warn_logs"] = max(current_warn, int(latest_warn * 1.2))
+        if latest_error > current_error:
+            overrides["error_logs"] = max(current_error, latest_error)
+
+    # 通过率很高时，建议略微收紧，提升质量基线。
+    if pass_rate > 0.95:
+        overrides["p95_node_duration_ms"] = max(100, int(current_p95 * 0.9))
+
+    return {
+        "profile": None,
+        "overrides": overrides,
+        "reason": "auto_from_insights",
+    }
+
+
 def _apply_contract_suggestions(
     graph: dict[str, Any],
     nodespec_map: dict[str, dict[str, Any]],
@@ -1221,6 +1257,7 @@ def get_workflow_observability_insights(
             latest_run_id=None,
             latest_summary={},
             thresholds=thresholds,
+            suggested_slo_config={},
             recommendations=[
                 ObservabilityRecommendationRead(
                     code="R_EMPTY",
@@ -1286,6 +1323,11 @@ def get_workflow_observability_insights(
         thresholds={key: int(value) for key, value in thresholds.items()},
         alert_runs=alert_runs,
     )
+    suggested_slo_config = _build_suggested_slo_config(
+        pass_rate=pass_rate,
+        latest_summary=latest_summary,
+        thresholds={key: int(value) for key, value in thresholds.items()},
+    )
     return WorkflowInsightsRead(
         workflow_id=workflow_id,
         window_size=window_size,
@@ -1297,6 +1339,7 @@ def get_workflow_observability_insights(
         latest_run_id=latest.id,
         latest_summary=latest_summary,
         thresholds=thresholds,
+        suggested_slo_config=suggested_slo_config,
         recommendations=[ObservabilityRecommendationRead(**item) for item in recommendations],
     )
 

@@ -298,6 +298,7 @@ class WorkflowInsightsRead(BaseModel):
     latest_run_id: str | None = None
     latest_summary: dict[str, int | float | str | None] = Field(default_factory=dict)
     thresholds: dict[str, int | float] = Field(default_factory=dict)
+    suggested_slo_config: dict[str, Any] = Field(default_factory=dict)
     recommendations: list[ObservabilityRecommendationRead] = Field(default_factory=list)
 
 

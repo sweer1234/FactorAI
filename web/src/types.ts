@@ -259,6 +259,11 @@ export interface WorkflowInsights {
   latestRunId?: string
   latestSummary: Record<string, string | number | boolean | null>
   thresholds: Record<string, number>
+  suggestedSloConfig: {
+    profile?: string
+    overrides: Record<string, number>
+    reason?: string
+  }
   recommendations: ObservabilityRecommendation[]
 }
 

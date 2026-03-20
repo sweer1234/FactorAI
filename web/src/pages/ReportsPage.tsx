@@ -54,6 +54,7 @@ export function ReportsPage() {
     error_logs: 0,
   })
   const [savingSlo, setSavingSlo] = useState(false)
+  const [applyingSuggestedSlo, setApplyingSuggestedSlo] = useState(false)
 
   const workflowRuns = useMemo(
     () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
@@ -130,6 +131,44 @@ export function ReportsPage() {
       setWorkflowInsights(insights)
     } finally {
       setSavingSlo(false)
+    }
+  }
+
+  const applySuggestedSloConfig = async () => {
+    if (!workflow?.id || !workflowInsights) return
+    const suggested = workflowInsights.suggestedSloConfig
+    if (!suggested || Object.keys(suggested.overrides ?? {}).length === 0) return
+    setApplyingSuggestedSlo(true)
+    try {
+      const profileFromSuggestion = suggested.profile ?? null
+      const template = await updateWorkflowSloConfig(workflow.id, {
+        profile: profileFromSuggestion,
+        overrides: suggested.overrides,
+      })
+      setSloTemplate(template)
+      setSloProfile(template.profile || 'auto')
+      setSloThresholds({
+        p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
+        failed_nodes: Number(template.thresholds.failed_nodes ?? 0),
+        warn_logs: Number(template.thresholds.warn_logs ?? 20),
+        error_logs: Number(template.thresholds.error_logs ?? 0),
+      })
+      const [slo, trends, alerts, insights] = await Promise.all([
+        fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
+        fetchWorkflowTrends(workflow.id, {
+          metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+          windowSize: 30,
+          useTemplate: true,
+        }),
+        fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
+        fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true }),
+      ])
+      setSloView(slo)
+      setWorkflowTrends(trends)
+      setWorkflowAlerts(alerts)
+      setWorkflowInsights(insights)
+    } finally {
+      setApplyingSuggestedSlo(false)
     }
   }
 
@@ -560,6 +599,19 @@ export function ReportsPage() {
             <p className="muted">
               通过率 {pct(workflowInsights.passRate)} · 告警运行 {workflowInsights.alertRuns}/{workflowInsights.totalRuns}
             </p>
+            <div className="header-actions">
+              <button
+                type="button"
+                className="primary ghost mini"
+                disabled={
+                  applyingSuggestedSlo ||
+                  Object.keys(workflowInsights.suggestedSloConfig.overrides ?? {}).length === 0
+                }
+                onClick={() => void applySuggestedSloConfig()}
+              >
+                {applyingSuggestedSlo ? '应用中…' : '一键应用建议阈值'}
+              </button>
+            </div>
             <div className="insight-list">
               {workflowInsights.recommendations.map((item) => (
                 <article key={item.code} className={`insight-item ${item.level}`}>
