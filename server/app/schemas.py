@@ -302,6 +302,29 @@ class WorkflowInsightsRead(BaseModel):
     recommendations: list[ObservabilityRecommendationRead] = Field(default_factory=list)
 
 
+class ObservabilityAnomalyRead(BaseModel):
+    run_id: str
+    metric_name: str
+    value: float
+    baseline: float
+    z_score: float
+    level: str
+    status: str
+    created_at: str
+    message: str
+
+
+class WorkflowAnomaliesRead(BaseModel):
+    workflow_id: str
+    window_size: int
+    z_threshold: float
+    metrics: list[str] = Field(default_factory=list)
+    total_runs: int
+    anomaly_count: int
+    anomaly_by_metric: dict[str, int] = Field(default_factory=dict)
+    anomalies: list[ObservabilityAnomalyRead] = Field(default_factory=list)
+
+
 class SLOViewRead(BaseModel):
     workflow_id: str
     window_size: int

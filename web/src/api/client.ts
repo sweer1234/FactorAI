@@ -1,4 +1,5 @@
 import type {
+  WorkflowAnomalies,
   WorkflowInsights,
   WorkflowAlerts,
   Artifact,
@@ -211,6 +212,29 @@ interface ApiWorkflowInsights {
     reason?: string | null
   }
   recommendations: ApiObservabilityRecommendation[]
+}
+
+interface ApiObservabilityAnomaly {
+  run_id: string
+  metric_name: string
+  value: number
+  baseline: number
+  z_score: number
+  level: string
+  status: string
+  created_at: string
+  message: string
+}
+
+interface ApiWorkflowAnomalies {
+  workflow_id: string
+  window_size: number
+  z_threshold: number
+  metrics: string[]
+  total_runs: number
+  anomaly_count: number
+  anomaly_by_metric: Record<string, number>
+  anomalies: ApiObservabilityAnomaly[]
 }
 
 interface ApiTrendPoint {
@@ -460,6 +484,29 @@ function toWorkflowInsights(item: ApiWorkflowInsights): WorkflowInsights {
       level: rec.level,
       message: rec.message,
       action: rec.action,
+    })),
+  }
+}
+
+function toWorkflowAnomalies(item: ApiWorkflowAnomalies): WorkflowAnomalies {
+  return {
+    workflowId: item.workflow_id,
+    windowSize: item.window_size,
+    zThreshold: item.z_threshold,
+    metrics: item.metrics,
+    totalRuns: item.total_runs,
+    anomalyCount: item.anomaly_count,
+    anomalyByMetric: item.anomaly_by_metric,
+    anomalies: item.anomalies.map((anomaly) => ({
+      runId: anomaly.run_id,
+      metricName: anomaly.metric_name,
+      value: Number(anomaly.value ?? 0),
+      baseline: Number(anomaly.baseline ?? 0),
+      zScore: Number(anomaly.z_score ?? 0),
+      level: anomaly.level,
+      status: anomaly.status,
+      createdAt: anomaly.created_at,
+      message: anomaly.message,
     })),
   }
 }
@@ -828,6 +875,23 @@ export async function fetchWorkflowInsights(
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiWorkflowInsights>(`/workflows/${workflowId}/observability/insights${suffix}`)
   return toWorkflowInsights(data)
+}
+
+export async function fetchWorkflowAnomalies(
+  workflowId: string,
+  params?: {
+    metrics?: string[]
+    windowSize?: number
+    zThreshold?: number
+  },
+) {
+  const query = new URLSearchParams()
+  if (params?.metrics && params.metrics.length > 0) query.set('metrics', params.metrics.join(','))
+  if (params?.windowSize) query.set('window_size', String(params.windowSize))
+  if (typeof params?.zThreshold === 'number') query.set('z_threshold', String(params.zThreshold))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiWorkflowAnomalies>(`/workflows/${workflowId}/observability/anomalies${suffix}`)
+  return toWorkflowAnomalies(data)
 }
 
 export async function fetchWorkflowSloView(

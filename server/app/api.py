@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime
 import hashlib
 from pathlib import Path
+import statistics
 from typing import Any
 import uuid
 
@@ -36,6 +37,7 @@ from .schemas import (
     RunCompareRead,
     RunMetricPointRead,
     ObservabilityRecommendationRead,
+    ObservabilityAnomalyRead,
     SLOConfigUpdateRequest,
     SLOTemplateRead,
     SLOViewRead,
@@ -45,6 +47,7 @@ from .schemas import (
     RunRead,
     TemplateRead,
     WorkflowAlertsRead,
+    WorkflowAnomaliesRead,
     WorkflowInsightsRead,
     WorkflowTrendRead,
     WorkflowCreate,
@@ -342,6 +345,22 @@ def _build_suggested_slo_config(
         "overrides": overrides,
         "reason": "auto_from_insights",
     }
+
+
+def _robust_z_scores(values: list[float]) -> tuple[float, float, list[float]]:
+    if not values:
+        return 0.0, 0.0, []
+    baseline = float(statistics.median(values))
+    deviations = [abs(item - baseline) for item in values]
+    mad = float(statistics.median(deviations)) if deviations else 0.0
+    if mad > 1e-12:
+        z_scores = [0.6745 * (item - baseline) / mad for item in values]
+        return baseline, mad, z_scores
+    std = float(statistics.pstdev(values)) if len(values) > 1 else 0.0
+    if std <= 1e-12:
+        return baseline, 0.0, [0.0 for _ in values]
+    z_scores = [(item - baseline) / std for item in values]
+    return baseline, std, z_scores
 
 
 def _apply_contract_suggestions(
@@ -1341,6 +1360,84 @@ def get_workflow_observability_insights(
         thresholds=thresholds,
         suggested_slo_config=suggested_slo_config,
         recommendations=[ObservabilityRecommendationRead(**item) for item in recommendations],
+    )
+
+
+@router.get("/workflows/{workflow_id}/observability/anomalies", response_model=WorkflowAnomaliesRead)
+def get_workflow_observability_anomalies(
+    workflow_id: str,
+    metrics: str | None = Query(default=None, description="逗号分隔指标名"),
+    window_size: int = Query(default=30, ge=1, le=300),
+    z_threshold: float = Query(default=3.0, ge=1.0, le=10.0),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+
+    default_metrics = [
+        "p95_node_duration_ms",
+        "failed_nodes",
+        "warn_logs",
+        "error_logs",
+        "total_duration_ms",
+    ]
+    selected_metrics = [item.strip() for item in (metrics or "").split(",") if item.strip()] or default_metrics
+    rows = list(
+        session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
+    )[:window_size]
+
+    anomaly_by_metric: dict[str, int] = {metric_name: 0 for metric_name in selected_metrics}
+    anomalies: list[ObservabilityAnomalyRead] = []
+    for metric_name in selected_metrics:
+        metric_values: list[float] = []
+        valid_rows: list[Run] = []
+        for row in rows:
+            raw = (row.observability or {}).get(metric_name)
+            try:
+                value = float(raw or 0)
+            except (TypeError, ValueError):
+                continue
+            metric_values.append(value)
+            valid_rows.append(row)
+        if not metric_values:
+            continue
+        baseline, _, z_scores = _robust_z_scores(metric_values)
+        for row, value, z_score in zip(valid_rows, metric_values, z_scores):
+            if abs(z_score) < z_threshold:
+                continue
+            if abs(value - baseline) < 1e-12:
+                continue
+            level = "critical" if abs(z_score) >= (z_threshold * 1.5) else "warning"
+            anomaly_by_metric[metric_name] = anomaly_by_metric.get(metric_name, 0) + 1
+            direction = "高于" if value > baseline else "低于"
+            anomalies.append(
+                ObservabilityAnomalyRead(
+                    run_id=row.id,
+                    metric_name=metric_name,
+                    value=value,
+                    baseline=baseline,
+                    z_score=z_score,
+                    level=level,
+                    status=row.status,
+                    created_at=row.created_at.isoformat(),
+                    message=(
+                        f"{metric_name} 异常，当前值 {value:.2f}，较基线 {baseline:.2f} {direction}"
+                        f"（z={z_score:.2f}）"
+                    ),
+                )
+            )
+
+    anomalies = sorted(anomalies, key=lambda item: abs(item.z_score), reverse=True)
+    return WorkflowAnomaliesRead(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        z_threshold=z_threshold,
+        metrics=selected_metrics,
+        total_runs=len(rows),
+        anomaly_count=len(anomalies),
+        anomaly_by_metric=anomaly_by_metric,
+        anomalies=anomalies[:100],
     )
 
 

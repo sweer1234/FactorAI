@@ -267,6 +267,29 @@ export interface WorkflowInsights {
   recommendations: ObservabilityRecommendation[]
 }
 
+export interface ObservabilityAnomaly {
+  runId: string
+  metricName: string
+  value: number
+  baseline: number
+  zScore: number
+  level: string
+  status: string
+  createdAt: string
+  message: string
+}
+
+export interface WorkflowAnomalies {
+  workflowId: string
+  windowSize: number
+  zThreshold: number
+  metrics: string[]
+  totalRuns: number
+  anomalyCount: number
+  anomalyByMetric: Record<string, number>
+  anomalies: ObservabilityAnomaly[]
+}
+
 export interface SloView {
   workflowId: string
   windowSize: number

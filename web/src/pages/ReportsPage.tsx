@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  fetchWorkflowAnomalies,
   fetchWorkflowInsights,
   fetchWorkflowAlerts,
   fetchWorkflowRunCompare,
@@ -10,7 +11,15 @@ import {
   updateWorkflowSloConfig,
 } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { RunCompare, SloTemplate, SloView, WorkflowAlerts, WorkflowInsights, WorkflowTrends } from '../types'
+import type {
+  RunCompare,
+  SloTemplate,
+  SloView,
+  WorkflowAlerts,
+  WorkflowAnomalies,
+  WorkflowInsights,
+  WorkflowTrends,
+} from '../types'
 
 const TREND_DEFINITIONS = [
   { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
@@ -45,6 +54,7 @@ export function ReportsPage() {
   const [workflowTrends, setWorkflowTrends] = useState<WorkflowTrends | null>(null)
   const [workflowAlerts, setWorkflowAlerts] = useState<WorkflowAlerts | null>(null)
   const [workflowInsights, setWorkflowInsights] = useState<WorkflowInsights | null>(null)
+  const [workflowAnomalies, setWorkflowAnomalies] = useState<WorkflowAnomalies | null>(null)
   const [selectedTrendMetric, setSelectedTrendMetric] = useState('p95_node_duration_ms')
   const [sloProfile, setSloProfile] = useState('auto')
   const [sloThresholds, setSloThresholds] = useState({
@@ -66,7 +76,7 @@ export function ReportsPage() {
     const runIds = workflowRuns.map((item) => item.id)
     const load = async () => {
       try {
-        const [compare, slo, template, trends, alerts, insights] = await Promise.all([
+        const [compare, slo, template, trends, alerts, insights, anomalies] = await Promise.all([
           fetchWorkflowRunCompare(workflow.id, runIds),
           fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
           fetchWorkflowSloTemplate(workflow.id),
@@ -77,6 +87,11 @@ export function ReportsPage() {
           }),
           fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
           fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true }),
+          fetchWorkflowAnomalies(workflow.id, {
+            metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+            windowSize: 30,
+            zThreshold: 2.8,
+          }),
         ])
         setRunCompare(compare)
         setSloView(slo)
@@ -84,6 +99,7 @@ export function ReportsPage() {
         setWorkflowTrends(trends)
         setWorkflowAlerts(alerts)
         setWorkflowInsights(insights)
+        setWorkflowAnomalies(anomalies)
         setSloProfile(template.profile || 'auto')
         setSloThresholds({
           p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
@@ -98,6 +114,7 @@ export function ReportsPage() {
         setWorkflowTrends(null)
         setWorkflowAlerts(null)
         setWorkflowInsights(null)
+        setWorkflowAnomalies(null)
       }
     }
     void load()
@@ -129,6 +146,12 @@ export function ReportsPage() {
       setWorkflowAlerts(alerts)
       const insights = await fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true })
       setWorkflowInsights(insights)
+      const anomalies = await fetchWorkflowAnomalies(workflow.id, {
+        metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+        windowSize: 30,
+        zThreshold: 2.8,
+      })
+      setWorkflowAnomalies(anomalies)
     } finally {
       setSavingSlo(false)
     }
@@ -153,7 +176,7 @@ export function ReportsPage() {
         warn_logs: Number(template.thresholds.warn_logs ?? 20),
         error_logs: Number(template.thresholds.error_logs ?? 0),
       })
-      const [slo, trends, alerts, insights] = await Promise.all([
+      const [slo, trends, alerts, insights, anomalies] = await Promise.all([
         fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
         fetchWorkflowTrends(workflow.id, {
           metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
@@ -162,11 +185,17 @@ export function ReportsPage() {
         }),
         fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
         fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true }),
+        fetchWorkflowAnomalies(workflow.id, {
+          metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+          windowSize: 30,
+          zThreshold: 2.8,
+        }),
       ])
       setSloView(slo)
       setWorkflowTrends(trends)
       setWorkflowAlerts(alerts)
       setWorkflowInsights(insights)
+      setWorkflowAnomalies(anomalies)
     } finally {
       setApplyingSuggestedSlo(false)
     }
@@ -584,6 +613,57 @@ export function ReportsPage() {
           </>
         ) : (
           <p className="muted">暂无告警时间线数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>异常检测（鲁棒 Z-Score）</h3>
+          <span className="tag">{workflowAnomalies ? workflowAnomalies.anomalyCount : '--'}</span>
+        </div>
+        {workflowAnomalies ? (
+          <>
+            <div className="alert-count-grid">
+              {Object.entries(workflowAnomalies.anomalyByMetric).map(([metric, count]) => (
+                <article key={metric}>
+                  <span>{TREND_LABELS[metric] ?? metric}</span>
+                  <strong>{count}</strong>
+                </article>
+              ))}
+            </div>
+            {workflowAnomalies.anomalies.length > 0 ? (
+              <div className="compare-table">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Run</th>
+                      <th>指标</th>
+                      <th>值/基线</th>
+                      <th>Z</th>
+                      <th>等级</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workflowAnomalies.anomalies.slice(0, 12).map((item) => (
+                      <tr key={`${item.runId}-${item.metricName}-${item.createdAt}`}>
+                        <td>{item.runId.slice(-8)}</td>
+                        <td>{TREND_LABELS[item.metricName] ?? item.metricName}</td>
+                        <td>
+                          {item.value.toFixed(1)} / {item.baseline.toFixed(1)}
+                        </td>
+                        <td>{item.zScore.toFixed(2)}</td>
+                        <td>{item.level}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">当前窗口未检测到异常点</p>
+            )}
+          </>
+        ) : (
+          <p className="muted">暂无异常检测数据</p>
         )}
       </section>
 
