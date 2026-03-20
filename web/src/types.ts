@@ -10,6 +10,12 @@ export interface Workflow {
   updatedAt: string
   lastRun?: string
   description?: string
+  ownerId?: string
+  runPolicy?: {
+    strategy: 'immediate' | 'fixed_backoff'
+    maxAttempts: number
+    backoffSec: number
+  }
   sourceTemplateId?: string
   sloProfile?: string
   sloOverrides?: Record<string, number>

@@ -189,26 +189,62 @@ export function TemplatesPage() {
                   </button>
                 </div>
                 {versionDiff ? (
-                  <div className="alert-count-grid" style={{ marginBottom: 8 }}>
-                    <article>
-                      <span>新增节点</span>
-                      <strong>{versionDiff.summary.added_nodes ?? 0}</strong>
-                    </article>
-                    <article>
-                      <span>移除节点</span>
-                      <strong>{versionDiff.summary.removed_nodes ?? 0}</strong>
-                    </article>
-                    <article>
-                      <span>变更节点</span>
-                      <strong>{versionDiff.summary.changed_nodes ?? 0}</strong>
-                    </article>
-                    <article>
-                      <span>边变更</span>
-                      <strong>
-                        +{versionDiff.summary.added_edges ?? 0} / -{versionDiff.summary.removed_edges ?? 0}
-                      </strong>
-                    </article>
-                  </div>
+                  <>
+                    <div className="alert-count-grid" style={{ marginBottom: 8 }}>
+                      <article>
+                        <span>新增节点</span>
+                        <strong>{versionDiff.summary.added_nodes ?? 0}</strong>
+                      </article>
+                      <article>
+                        <span>移除节点</span>
+                        <strong>{versionDiff.summary.removed_nodes ?? 0}</strong>
+                      </article>
+                      <article>
+                        <span>变更节点</span>
+                        <strong>{versionDiff.summary.changed_nodes ?? 0}</strong>
+                      </article>
+                      <article>
+                        <span>边变更</span>
+                        <strong>
+                          +{versionDiff.summary.added_edges ?? 0} / -{versionDiff.summary.removed_edges ?? 0}
+                        </strong>
+                      </article>
+                    </div>
+                    <div className="compare-table" style={{ marginBottom: 8 }}>
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>节点新增</th>
+                            <th>节点移除</th>
+                            <th>节点变更</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>{versionDiff.addedNodes.slice(0, 6).join('，') || '--'}</td>
+                            <td>{versionDiff.removedNodes.slice(0, 6).join('，') || '--'}</td>
+                            <td>{versionDiff.changedNodes.slice(0, 6).join('，') || '--'}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="compare-table" style={{ marginBottom: 8 }}>
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>新增边</th>
+                            <th>移除边</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>{versionDiff.addedEdges.slice(0, 6).join('，') || '--'}</td>
+                            <td>{versionDiff.removedEdges.slice(0, 6).join('，') || '--'}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 ) : null}
                 <div className="compare-table">
                   <table className="table">

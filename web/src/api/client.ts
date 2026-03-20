@@ -51,6 +51,12 @@ interface ApiWorkflow {
   updated_at: string
   last_run?: string | null
   description?: string | null
+  owner_id?: string | null
+  run_policy?: {
+    strategy?: 'immediate' | 'fixed_backoff'
+    max_attempts?: number
+    backoff_sec?: number
+  } | null
   source_template_id?: string | null
   slo_profile?: string | null
   slo_overrides?: Record<string, number> | null
@@ -329,6 +335,13 @@ interface ApiSloTemplate {
   thresholds: Record<string, number>
 }
 
+interface ApiWorkflowRunPolicy {
+  workflow_id: string
+  strategy: 'immediate' | 'fixed_backoff'
+  max_attempts: number
+  backoff_sec: number
+}
+
 interface ApiGraphRevision {
   id: string
   workflow_id: string
@@ -348,6 +361,12 @@ function toWorkflow(item: ApiWorkflow): Workflow {
     updatedAt: item.updated_at,
     lastRun: item.last_run ?? undefined,
     description: item.description ?? undefined,
+    ownerId: item.owner_id ?? undefined,
+    runPolicy: {
+      strategy: item.run_policy?.strategy ?? 'immediate',
+      maxAttempts: Number(item.run_policy?.max_attempts ?? 1),
+      backoffSec: Number(item.run_policy?.backoff_sec ?? 0),
+    },
     sourceTemplateId: item.source_template_id ?? undefined,
     sloProfile: item.slo_profile ?? undefined,
     sloOverrides: item.slo_overrides ?? undefined,
@@ -638,6 +657,15 @@ function toSloTemplate(item: ApiSloTemplate): SloTemplate {
     profile: item.profile,
     reason: item.reason,
     thresholds: item.thresholds,
+  }
+}
+
+function toWorkflowRunPolicy(item: ApiWorkflowRunPolicy) {
+  return {
+    workflowId: item.workflow_id,
+    strategy: item.strategy,
+    maxAttempts: Number(item.max_attempts ?? 1),
+    backoffSec: Number(item.backoff_sec ?? 0),
   }
 }
 
@@ -1118,6 +1146,26 @@ export async function updateWorkflowSloConfig(
     }),
   })
   return toSloTemplate(data)
+}
+
+export async function fetchWorkflowRunPolicy(workflowId: string) {
+  const data = await request<ApiWorkflowRunPolicy>(`/workflows/${workflowId}/run-policy`)
+  return toWorkflowRunPolicy(data)
+}
+
+export async function updateWorkflowRunPolicy(
+  workflowId: string,
+  payload: { strategy: 'immediate' | 'fixed_backoff'; maxAttempts: number; backoffSec: number },
+) {
+  const data = await request<ApiWorkflowRunPolicy>(`/workflows/${workflowId}/run-policy`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      strategy: payload.strategy,
+      max_attempts: payload.maxAttempts,
+      backoff_sec: payload.backoffSec,
+    }),
+  })
+  return toWorkflowRunPolicy(data)
 }
 
 export async function fetchBootstrap() {

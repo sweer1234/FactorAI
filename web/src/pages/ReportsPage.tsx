@@ -5,11 +5,13 @@ import {
   fetchWorkflowInsightsReport,
   fetchWorkflowInsights,
   fetchWorkflowAlerts,
+  fetchWorkflowRunPolicy,
   fetchWorkflowRunCompare,
   fetchWorkflowSloTemplate,
   fetchWorkflowSloView,
   fetchWorkflowTrends,
   updateWorkflowSloConfig,
+  updateWorkflowRunPolicy,
 } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
 import type {
@@ -65,8 +67,18 @@ export function ReportsPage() {
     error_logs: 0,
   })
   const [savingSlo, setSavingSlo] = useState(false)
+  const [savingRunPolicy, setSavingRunPolicy] = useState(false)
   const [applyingSuggestedSlo, setApplyingSuggestedSlo] = useState(false)
   const [exportingInsights, setExportingInsights] = useState(false)
+  const [runPolicy, setRunPolicy] = useState<{
+    strategy: 'immediate' | 'fixed_backoff'
+    maxAttempts: number
+    backoffSec: number
+  }>({
+    strategy: 'immediate',
+    maxAttempts: 1,
+    backoffSec: 0,
+  })
 
   const workflowRuns = useMemo(
     () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
@@ -78,7 +90,7 @@ export function ReportsPage() {
     const runIds = workflowRuns.map((item) => item.id)
     const load = async () => {
       try {
-        const [compare, slo, template, trends, alerts, insights, anomalies] = await Promise.all([
+        const [compare, slo, template, trends, alerts, insights, anomalies, policy] = await Promise.all([
           fetchWorkflowRunCompare(workflow.id, runIds),
           fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
           fetchWorkflowSloTemplate(workflow.id),
@@ -94,6 +106,7 @@ export function ReportsPage() {
             windowSize: 30,
             zThreshold: 2.8,
           }),
+          fetchWorkflowRunPolicy(workflow.id),
         ])
         setRunCompare(compare)
         setSloView(slo)
@@ -102,6 +115,11 @@ export function ReportsPage() {
         setWorkflowAlerts(alerts)
         setWorkflowInsights(insights)
         setWorkflowAnomalies(anomalies)
+        setRunPolicy({
+          strategy: policy.strategy,
+          maxAttempts: policy.maxAttempts,
+          backoffSec: policy.backoffSec,
+        })
         setSloProfile(template.profile || 'auto')
         setSloThresholds({
           p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
@@ -117,6 +135,11 @@ export function ReportsPage() {
         setWorkflowAlerts(null)
         setWorkflowInsights(null)
         setWorkflowAnomalies(null)
+        setRunPolicy({
+          strategy: 'immediate',
+          maxAttempts: 1,
+          backoffSec: 0,
+        })
       }
     }
     void load()
@@ -156,6 +179,25 @@ export function ReportsPage() {
       setWorkflowAnomalies(anomalies)
     } finally {
       setSavingSlo(false)
+    }
+  }
+
+  const saveRunPolicy = async () => {
+    if (!workflow?.id) return
+    setSavingRunPolicy(true)
+    try {
+      const policy = await updateWorkflowRunPolicy(workflow.id, {
+        strategy: runPolicy.strategy,
+        maxAttempts: Number(runPolicy.maxAttempts),
+        backoffSec: Number(runPolicy.backoffSec),
+      })
+      setRunPolicy({
+        strategy: policy.strategy,
+        maxAttempts: policy.maxAttempts,
+        backoffSec: policy.backoffSec,
+      })
+    } finally {
+      setSavingRunPolicy(false)
     }
   }
 
@@ -481,6 +523,54 @@ export function ReportsPage() {
               <div className="header-actions">
                 <button type="button" className="primary ghost" disabled={savingSlo} onClick={() => void saveSloConfig()}>
                   {savingSlo ? '保存中…' : '保存 SLO 配置'}
+                </button>
+              </div>
+            </div>
+            <div className="slo-config-grid" style={{ marginTop: 8 }}>
+              <label>
+                重试策略
+                <select
+                  value={runPolicy.strategy}
+                  onChange={(event) =>
+                    setRunPolicy((prev) => ({
+                      ...prev,
+                      strategy: event.target.value as 'immediate' | 'fixed_backoff',
+                    }))
+                  }
+                >
+                  <option value="immediate">immediate</option>
+                  <option value="fixed_backoff">fixed_backoff</option>
+                </select>
+              </label>
+              <label>
+                最大尝试次数
+                <input
+                  className="search-input"
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={String(runPolicy.maxAttempts)}
+                  onChange={(event) =>
+                    setRunPolicy((prev) => ({ ...prev, maxAttempts: Math.max(1, Math.min(5, Number(event.target.value || 1))) }))
+                  }
+                />
+              </label>
+              <label>
+                固定退避秒数
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={String(runPolicy.backoffSec)}
+                  onChange={(event) =>
+                    setRunPolicy((prev) => ({ ...prev, backoffSec: Math.max(0, Math.min(300, Number(event.target.value || 0))) }))
+                  }
+                />
+              </label>
+              <div className="header-actions">
+                <button type="button" className="primary ghost" disabled={savingRunPolicy} onClick={() => void saveRunPolicy()}>
+                  {savingRunPolicy ? '保存中…' : '保存运行重试策略'}
                 </button>
               </div>
             </div>
