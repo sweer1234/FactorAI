@@ -29,6 +29,7 @@ ERROR_NODE_EXECUTION = "E_NODE_EXECUTION"
 ERROR_RUN_INTERNAL = "E_RUN_INTERNAL"
 ERROR_RUN_NOT_FOUND = "E_RUN_NOT_FOUND"
 ERROR_RUN_CANCELLED = "E_RUN_CANCELLED"
+ERROR_RESUME_NODE_NOT_FOUND = "E_RESUME_NODE_NOT_FOUND"
 
 WARN_ARTIFACT_RESOLVE = "W_ARTIFACT_RESOLVE"
 DEFAULT_ALERT_THRESHOLDS = {
@@ -185,6 +186,8 @@ def _schedule_retry_after_failure(run_id: str, workflow_id: str, *, error_code: 
             strategy = "immediate"
         owner_id = run.owner_id
         retry_origin = run.retry_origin_run_id or run.retried_from_run_id or run.id
+        resume_from_run_id = run.resume_from_run_id
+        resume_from_node_id = run.resume_from_node_id
 
     _append_run_log(
         run_id,
@@ -203,6 +206,8 @@ def _schedule_retry_after_failure(run_id: str, workflow_id: str, *, error_code: 
             workflow_id,
             owner_id=owner_id,
             retried_from_run_id=run_id,
+            resume_from_run_id=resume_from_run_id,
+            resume_from_node_id=resume_from_node_id,
             retry_origin_run_id=retry_origin,
             retry_attempt=next_attempt,
             retry_max_attempts=max_attempts,
@@ -389,7 +394,7 @@ def _upsert_node_state(
         session.commit()
 
 
-def _build_order(workflow: Workflow) -> list[str]:
+def _build_dag(workflow: Workflow) -> nx.DiGraph:
     graph = workflow.graph or {}
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
@@ -399,10 +404,28 @@ def _build_order(workflow: Workflow) -> list[str]:
     for edge in edges:
         dag.add_edge(edge["source"], edge["target"])
     if len(nodes) == 0:
-        return []
+        return dag
     if not nx.is_directed_acyclic_graph(dag):
         raise ValueError(f"{ERROR_GRAPH_CYCLE}: 工作流图中存在环，无法执行")
+    return dag
+
+
+def _build_order(workflow: Workflow) -> list[str]:
+    dag = _build_dag(workflow)
+    if len(dag.nodes) == 0:
+        return []
     return list(nx.topological_sort(dag))
+
+
+def _resolve_resume_order(workflow: Workflow, order: list[str], resume_node_id: str) -> tuple[list[str], int]:
+    dag = _build_dag(workflow)
+    if resume_node_id not in dag.nodes:
+        raise ValueError(f"{ERROR_RESUME_NODE_NOT_FOUND}: 续跑节点不存在: {resume_node_id}")
+    scope = {resume_node_id}
+    scope.update(nx.ancestors(dag, resume_node_id))
+    scope.update(nx.descendants(dag, resume_node_id))
+    narrowed = [node_id for node_id in order if node_id in scope]
+    return narrowed, max(0, len(order) - len(narrowed))
 
 
 def _node_label_map(workflow: Workflow) -> dict[str, str]:
@@ -530,6 +553,8 @@ def execute_run(run_id: str, workflow_id: str) -> None:
     with Session(engine) as session:
         workflow = session.get(Workflow, workflow_id)
         assert workflow is not None
+        run = session.get(Run, run_id)
+        assert run is not None
         try:
             order = _build_order(workflow)
             labels = _node_label_map(workflow)
@@ -537,6 +562,18 @@ def execute_run(run_id: str, workflow_id: str) -> None:
             nodespec_map = _nodespec_map(session)
             contract_result = compile_workflow_contract(workflow.graph or {}, nodespec_map, strict=False)
             ctx = RunContext()
+            if run.resume_from_node_id:
+                order, skipped_count = _resolve_resume_order(workflow, order, str(run.resume_from_node_id))
+                _append_run_log(
+                    run_id,
+                    workflow_id,
+                    level="INFO",
+                    message=(
+                        f"失败节点续跑: node={run.resume_from_node_id}, "
+                        f"source_run={run.resume_from_run_id or run.retried_from_run_id or '-'}, "
+                        f"跳过无关节点 {skipped_count} 个"
+                    ),
+                )
             _append_run_log(run_id, workflow_id, level="INFO", message=f"执行顺序: {order}")
             for item in contract_result.get("warnings", []):
                 _append_run_log(
@@ -746,6 +783,8 @@ def start_run(
     *,
     owner_id: str | None = None,
     retried_from_run_id: str | None = None,
+    resume_from_run_id: str | None = None,
+    resume_from_node_id: str | None = None,
     retry_origin_run_id: str | None = None,
     retry_attempt: int = 1,
     retry_max_attempts: int = 1,
@@ -771,6 +810,8 @@ def start_run(
             observability={},
             cancel_requested=False,
             retried_from_run_id=retried_from_run_id,
+            resume_from_run_id=resume_from_run_id,
+            resume_from_node_id=resume_from_node_id,
             retry_origin_run_id=retry_origin_run_id,
             retry_attempt=max(1, int(retry_attempt)),
             retry_max_attempts=max(1, min(5, int(retry_max_attempts))),
@@ -837,10 +878,71 @@ def retry_run(
         resolved_strategy = str(strategy or run.retry_strategy or "immediate")
         resolved_max_attempts = int(max_attempts if max_attempts is not None else (run.retry_max_attempts or 1))
         resolved_backoff_sec = int(backoff_sec if backoff_sec is not None else (run.retry_backoff_sec or 0))
+        resume_from_run_id = run.resume_from_run_id
+        resume_from_node_id = run.resume_from_node_id
     return start_run(
         workflow_id,
         owner_id=owner_id or run.owner_id,
         retried_from_run_id=run_id,
+        resume_from_run_id=resume_from_run_id,
+        resume_from_node_id=resume_from_node_id,
+        retry_origin_run_id=origin,
+        retry_attempt=1,
+        retry_max_attempts=max(1, min(5, int(resolved_max_attempts))),
+        retry_strategy=resolved_strategy,
+        retry_backoff_sec=max(0, min(300, int(resolved_backoff_sec))),
+    )
+
+
+def retry_run_from_failed_node(
+    run_id: str,
+    *,
+    owner_id: str | None = None,
+    failed_node_id: str | None = None,
+    strategy: str | None = None,
+    max_attempts: int | None = None,
+    backoff_sec: int | None = None,
+) -> Run:
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            raise ValueError("run not found")
+        if run.status != "failed":
+            raise ValueError("only failed run can retry from failed node")
+        workflow = session.get(Workflow, run.workflow_id)
+        if not workflow:
+            raise ValueError("workflow not found")
+        origin = run.retry_origin_run_id or run.id
+        resolved_strategy = str(strategy or run.retry_strategy or "immediate")
+        resolved_max_attempts = int(max_attempts if max_attempts is not None else (run.retry_max_attempts or 1))
+        resolved_backoff_sec = int(backoff_sec if backoff_sec is not None else (run.retry_backoff_sec or 0))
+
+        requested_node = str(failed_node_id or "").strip()
+        if requested_node:
+            node_id = requested_node
+        else:
+            failed_state = session.exec(
+                select(WorkflowNodeState)
+                .where(
+                    WorkflowNodeState.run_id == run_id,
+                    WorkflowNodeState.status == "failed",
+                )
+                .order_by(WorkflowNodeState.started_at.desc())
+            ).first()
+            node_id = str(failed_state.node_id) if failed_state else ""
+        if not node_id:
+            raise ValueError("failed node not found")
+
+        graph_nodes = {str(item.get("id")) for item in (workflow.graph or {}).get("nodes", [])}
+        if node_id not in graph_nodes:
+            raise ValueError(f"failed node not found in workflow graph: {node_id}")
+
+    return start_run(
+        run.workflow_id,
+        owner_id=owner_id or run.owner_id,
+        retried_from_run_id=run_id,
+        resume_from_run_id=run_id,
+        resume_from_node_id=node_id,
         retry_origin_run_id=origin,
         retry_attempt=1,
         retry_max_attempts=max(1, min(5, int(resolved_max_attempts))),

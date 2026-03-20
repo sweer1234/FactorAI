@@ -56,6 +56,10 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE run ADD COLUMN cancel_requested BOOLEAN DEFAULT 0"))
             if not _column_exists(conn, "run", "retried_from_run_id"):
                 conn.execute(text("ALTER TABLE run ADD COLUMN retried_from_run_id TEXT"))
+            if not _column_exists(conn, "run", "resume_from_run_id"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN resume_from_run_id TEXT"))
+            if not _column_exists(conn, "run", "resume_from_node_id"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN resume_from_node_id TEXT"))
             if not _column_exists(conn, "run", "owner_id"):
                 conn.execute(text("ALTER TABLE run ADD COLUMN owner_id TEXT"))
             if not _column_exists(conn, "run", "retry_origin_run_id"):

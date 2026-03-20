@@ -139,6 +139,8 @@ interface ApiRun {
   observability?: Record<string, string | number | boolean | null | object | unknown[]>
   cancel_requested?: boolean
   retried_from_run_id?: string | null
+  resume_from_run_id?: string | null
+  resume_from_node_id?: string | null
   retry_origin_run_id?: string | null
   retry_attempt?: number
   retry_max_attempts?: number
@@ -455,6 +457,8 @@ function toRun(item: ApiRun): RunRecord {
     observability: item.observability ?? undefined,
     cancelRequested: item.cancel_requested ?? undefined,
     retriedFromRunId: item.retried_from_run_id ?? undefined,
+    resumeFromRunId: item.resume_from_run_id ?? undefined,
+    resumeFromNodeId: item.resume_from_node_id ?? undefined,
     retryOriginRunId: item.retry_origin_run_id ?? undefined,
     retryAttempt: item.retry_attempt ?? undefined,
     retryMaxAttempts: item.retry_max_attempts ?? undefined,
@@ -985,6 +989,22 @@ export async function retryRunWithStrategy(
       strategy: payload.strategy ?? 'immediate',
       max_attempts: payload.maxAttempts ?? 1,
       backoff_sec: payload.backoffSec ?? 0,
+    }),
+  })
+  return toRun(data)
+}
+
+export async function retryRunFromFailedNode(
+  runId: string,
+  payload?: { failedNodeId?: string; strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
+) {
+  const data = await request<ApiRun>(`/runs/${runId}/retry-from-failed-node`, {
+    method: 'POST',
+    body: JSON.stringify({
+      failed_node_id: payload?.failedNodeId ?? null,
+      strategy: payload?.strategy ?? 'immediate',
+      max_attempts: payload?.maxAttempts ?? 1,
+      backoff_sec: payload?.backoffSec ?? 0,
     }),
   })
   return toRun(data)

@@ -83,6 +83,8 @@ class Run(SQLModel, table=True):
     observability: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     cancel_requested: bool = Field(default=False, index=True)
     retried_from_run_id: str | None = Field(default=None, index=True)
+    resume_from_run_id: str | None = Field(default=None, index=True)
+    resume_from_node_id: str | None = Field(default=None, index=True)
     retry_origin_run_id: str | None = Field(default=None, index=True)
     retry_attempt: int = Field(default=1)
     retry_max_attempts: int = Field(default=1)

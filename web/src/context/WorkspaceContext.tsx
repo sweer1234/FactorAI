@@ -19,6 +19,7 @@ import {
   publishTemplateFromWorkflow,
   rollbackWorkflowContractFixes,
   retryRun as apiRetryRun,
+  retryRunFromFailedNode as apiRetryRunFromFailedNode,
   retryRunWithStrategy,
   runWorkflow as apiRunWorkflow,
   saveWorkflowDraft as apiSaveWorkflowDraft,
@@ -94,6 +95,10 @@ export interface WorkspaceStore {
   retryRunById: (
     runId: string,
     options?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
+  ) => Promise<void>
+  retryRunFromFailedNodeById: (
+    runId: string,
+    options?: { failedNodeId?: string; strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
   ) => Promise<void>
   batchRunAction: (payload: {
     action: 'cancel' | 'retry'
@@ -398,6 +403,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     updateNotice(`已重试任务：${runId.slice(-8)}`)
   }
 
+  const retryRunFromFailedNodeById: WorkspaceStore['retryRunFromFailedNodeById'] = async (runId, options) => {
+    if (!backendOnline) return
+    const created = await apiRetryRunFromFailedNode(runId, options)
+    setRuns((prev) => [created, ...prev])
+    await refreshWorkflows()
+    updateNotice(`已从失败节点续跑：${runId.slice(-8)}`)
+  }
+
   const batchRunAction: WorkspaceStore['batchRunAction'] = async (payload) => {
     if (!backendOnline) return { total: 0, success: 0, failed: 0 }
     const result = await apiBatchRunAction(payload)
@@ -441,6 +454,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     getGraphRevisions,
     cancelRunById,
     retryRunById,
+    retryRunFromFailedNodeById,
     batchRunAction,
     notice,
   }

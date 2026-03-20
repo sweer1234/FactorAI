@@ -146,6 +146,8 @@ class RunRead(BaseModel):
     owner_id: str | None = None
     cancel_requested: bool = False
     retried_from_run_id: str | None = None
+    resume_from_run_id: str | None = None
+    resume_from_node_id: str | None = None
     retry_origin_run_id: str | None = None
     retry_attempt: int = 1
     retry_max_attempts: int = 1
@@ -154,6 +156,13 @@ class RunRead(BaseModel):
 
 
 class RunRetryRequest(BaseModel):
+    strategy: Literal["immediate", "fixed_backoff"] = "immediate"
+    max_attempts: int = Field(default=1, ge=1, le=5)
+    backoff_sec: int = Field(default=0, ge=0, le=300)
+
+
+class RunRetryFromFailedNodeRequest(BaseModel):
+    failed_node_id: str | None = None
     strategy: Literal["immediate", "fixed_backoff"] = "immediate"
     max_attempts: int = Field(default=1, ge=1, le=5)
     backoff_sec: int = Field(default=0, ge=0, le=300)

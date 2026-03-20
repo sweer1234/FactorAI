@@ -42,6 +42,7 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/node-library`
 - `POST /api/runs/{id}/cancel`
 - `POST /api/runs/{id}/retry`
+- `POST /api/runs/{id}/retry-from-failed-node`
 - `POST /api/runs/batch-action`
 - `GET /api/workflows/{id}/run-policy`
 - `PUT /api/workflows/{id}/run-policy`

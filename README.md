@@ -96,6 +96,7 @@ npm run build
 - `GET /api/workflows/{workflow_id}/run-policy`
 - `PUT /api/workflows/{workflow_id}/run-policy`
 - `POST /api/runs/batch-action`（批量取消/批量重试）
+- `POST /api/runs/{run_id}/retry-from-failed-node`（从失败节点相关子图续跑）
 
 ## 模板发布与版本差异导出（新增）
 

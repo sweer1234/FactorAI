@@ -121,6 +121,8 @@ export interface RunRecord {
   observability?: Record<string, string | number | boolean | null | object | unknown[]>
   cancelRequested?: boolean
   retriedFromRunId?: string
+  resumeFromRunId?: string
+  resumeFromNodeId?: string
   retryOriginRunId?: string
   retryAttempt?: number
   retryMaxAttempts?: number

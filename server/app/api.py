@@ -62,6 +62,7 @@ from .schemas import (
     RunBatchActionRequest,
     RunBatchActionItemRead,
     RunRetryRequest,
+    RunRetryFromFailedNodeRequest,
     WorkflowRunPolicyRead,
     WorkflowRunPolicyUpdateRequest,
     RunRead,
@@ -92,6 +93,7 @@ from .services.execution import (
     list_runs,
     list_workflow_metric_points,
     retry_run,
+    retry_run_from_failed_node,
     start_run,
 )
 from .services.node_library import NODE_LIBRARY
@@ -319,6 +321,8 @@ def _run_to_read(row: Run) -> RunRead:
         owner_id=row.owner_id,
         cancel_requested=bool(row.cancel_requested),
         retried_from_run_id=row.retried_from_run_id,
+        resume_from_run_id=row.resume_from_run_id,
+        resume_from_node_id=row.resume_from_node_id,
         retry_origin_run_id=row.retry_origin_run_id,
         retry_attempt=int(row.retry_attempt or 1),
         retry_max_attempts=int(row.retry_max_attempts or 1),
@@ -1653,6 +1657,28 @@ def retry_run_api(
         new_run = retry_run(
             run_id,
             owner_id=current_user.user_id,
+            strategy=(payload.strategy if payload else None),
+            max_attempts=(payload.max_attempts if payload else None),
+            backoff_sec=(payload.backoff_sec if payload else None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _run_to_read(new_run)
+
+
+@router.post("/runs/{run_id}/retry-from-failed-node", response_model=RunRead)
+def retry_run_from_failed_node_api(
+    run_id: str,
+    payload: RunRetryFromFailedNodeRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_run_access(session, run_id, current_user)
+    try:
+        new_run = retry_run_from_failed_node(
+            run_id,
+            owner_id=current_user.user_id,
+            failed_node_id=(payload.failed_node_id if payload else None),
             strategy=(payload.strategy if payload else None),
             max_attempts=(payload.max_attempts if payload else None),
             backoff_sec=(payload.backoff_sec if payload else None),

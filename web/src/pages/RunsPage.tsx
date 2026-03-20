@@ -10,7 +10,7 @@ const statusLabel = {
 }
 
 export function RunsPage() {
-  const { runs, cancelRunById, retryRunById, batchRunAction } = useWorkspace()
+  const { runs, cancelRunById, retryRunById, retryRunFromFailedNodeById, batchRunAction } = useWorkspace()
   const [statusFilter, setStatusFilter] = useState<'all' | 'queued' | 'running' | 'success' | 'failed' | 'cancelled'>(
     'all',
   )
@@ -146,6 +146,8 @@ export function RunsPage() {
               <span>开始时间: {run.createdAt}</span>
               {run.retryAttempt ? <span>重试尝试: {run.retryAttempt}/{run.retryMaxAttempts ?? 1}</span> : null}
               {run.retriedFromRunId ? <span>来源任务: {run.retriedFromRunId.slice(-8)}</span> : null}
+              {run.resumeFromRunId ? <span>续跑来源: {run.resumeFromRunId.slice(-8)}</span> : null}
+              {run.resumeFromNodeId ? <span>续跑节点: {run.resumeFromNodeId}</span> : null}
             </div>
             <div className="table-actions">
               {(run.status === 'queued' || run.status === 'running') && (
@@ -166,6 +168,21 @@ export function RunsPage() {
                   }
                 >
                   重试
+                </button>
+              )}
+              {run.status === 'failed' && (
+                <button
+                  type="button"
+                  className="button-link ghost"
+                  onClick={() =>
+                    void retryRunFromFailedNodeById(run.id, {
+                      strategy: retryStrategy,
+                      maxAttempts: retryAttempts,
+                      backoffSec: retryBackoffSec,
+                    })
+                  }
+                >
+                  失败节点续跑
                 </button>
               )}
             </div>
