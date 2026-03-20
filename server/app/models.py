@@ -41,6 +41,13 @@ class Template(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class TemplateSubscription(SQLModel, table=True):
+    id: str = Field(primary_key=True, index=True)
+    template_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 class TemplateVersion(SQLModel, table=True):
     id: str = Field(primary_key=True, index=True)
     template_id: str = Field(index=True)

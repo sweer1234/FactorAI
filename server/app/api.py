@@ -15,7 +15,18 @@ from sqlmodel import Session, select
 
 from .config import settings
 from .db import get_session
-from .models import NodeSpec, Report, Run, RunLog, Template, TemplateVersion, UploadedArtifact, Workflow, WorkflowGraphRevision
+from .models import (
+    NodeSpec,
+    Report,
+    Run,
+    RunLog,
+    Template,
+    TemplateSubscription,
+    TemplateVersion,
+    UploadedArtifact,
+    Workflow,
+    WorkflowGraphRevision,
+)
 from .security import AuthUser, require_request_access
 from .schemas import (
     AlertIncidentRead,
@@ -149,6 +160,24 @@ def _can_manage_template(template: Template, user: AuthUser) -> bool:
     return bool(template.owner_id and template.owner_id == user.user_id)
 
 
+def _template_subscriptions_for_user(session: Session, user_id: str) -> set[str]:
+    rows = list(session.exec(select(TemplateSubscription.template_id).where(TemplateSubscription.user_id == user_id)))
+    return {str(item) for item in rows}
+
+
+def _template_subscribed_count_map(session: Session, template_ids: list[str]) -> dict[str, int]:
+    if not template_ids:
+        return {}
+    rows = list(
+        session.exec(select(TemplateSubscription.template_id).where(TemplateSubscription.template_id.in_(template_ids)))
+    )
+    result: dict[str, int] = {}
+    for item in rows:
+        key = str(item)
+        result[key] = result.get(key, 0) + 1
+    return result
+
+
 def _graph_version_diff(from_graph: dict[str, Any], to_graph: dict[str, Any]) -> TemplateVersionDiffRead:
     from_nodes = {str(item.get("id")): str(item.get("label") or item.get("id")) for item in (from_graph or {}).get("nodes", [])}
     to_nodes = {str(item.get("id")): str(item.get("label") or item.get("id")) for item in (to_graph or {}).get("nodes", [])}
@@ -223,7 +252,12 @@ def _workflow_to_read(row: Workflow) -> WorkflowRead:
     )
 
 
-def _template_to_read(row: Template) -> TemplateRead:
+def _template_to_read(
+    row: Template,
+    *,
+    is_subscribed: bool = False,
+    subscribed_count: int = 0,
+) -> TemplateRead:
     return TemplateRead(
         id=row.id,
         name=row.name,
@@ -234,6 +268,8 @@ def _template_to_read(row: Template) -> TemplateRead:
         owner_id=row.owner_id,
         official=row.official,
         template_group=row.template_group,
+        is_subscribed=is_subscribed,
+        subscribed_count=subscribed_count,
         graph=row.graph or {"nodes": [], "edges": []},
     )
 
@@ -1113,6 +1149,8 @@ def run_workflow(
 def get_templates(
     session: Session = Depends(get_session),
     official: bool | None = Query(default=None),
+    subscribed: bool | None = Query(default=None),
+    owned: bool | None = Query(default=None),
     keyword: str | None = Query(default=None),
     current_user: AuthUser = Depends(require_request_access),
 ):
@@ -1120,12 +1158,27 @@ def get_templates(
     if official is not None:
         query = query.where(Template.official == official)
     rows = list(session.exec(query))
+    subscribed_set = _template_subscriptions_for_user(session, current_user.user_id)
     if not _is_admin(current_user):
         rows = [row for row in rows if _can_access_template(row, current_user)]
+    if owned is True:
+        rows = [row for row in rows if row.owner_id == current_user.user_id]
+    if subscribed is True:
+        rows = [row for row in rows if row.id in subscribed_set]
+    if subscribed is False:
+        rows = [row for row in rows if row.id not in subscribed_set]
     if keyword:
         key = keyword.lower()
         rows = [row for row in rows if key in row.name.lower() or key in row.description.lower()]
-    return [_template_to_read(row) for row in rows]
+    count_map = _template_subscribed_count_map(session, [row.id for row in rows])
+    return [
+        _template_to_read(
+            row,
+            is_subscribed=row.id in subscribed_set,
+            subscribed_count=int(count_map.get(row.id, 0)),
+        )
+        for row in rows
+    ]
 
 
 @router.get("/templates/{template_id}", response_model=TemplateRead)
@@ -1135,7 +1188,63 @@ def get_template(
     current_user: AuthUser = Depends(require_request_access),
 ):
     row = _ensure_template_access(session, template_id, current_user)
-    return _template_to_read(row)
+    subscribed_set = _template_subscriptions_for_user(session, current_user.user_id)
+    count_map = _template_subscribed_count_map(session, [row.id])
+    return _template_to_read(
+        row,
+        is_subscribed=row.id in subscribed_set,
+        subscribed_count=int(count_map.get(row.id, 0)),
+    )
+
+
+@router.post("/templates/{template_id}/subscribe", response_model=TemplateRead)
+def subscribe_template(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    template = _ensure_template_access(session, template_id, current_user)
+    existing = session.exec(
+        select(TemplateSubscription).where(
+            TemplateSubscription.template_id == template_id,
+            TemplateSubscription.user_id == current_user.user_id,
+        )
+    ).first()
+    if existing is None:
+        session.add(
+            TemplateSubscription(
+                id=f"ts-{uuid.uuid4().hex[:10]}",
+                template_id=template_id,
+                user_id=current_user.user_id,
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+    count_map = _template_subscribed_count_map(session, [template_id])
+    return _template_to_read(template, is_subscribed=True, subscribed_count=int(count_map.get(template_id, 0)))
+
+
+@router.delete("/templates/{template_id}/subscribe", response_model=TemplateRead)
+def unsubscribe_template(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    template = _ensure_template_access(session, template_id, current_user)
+    rows = list(
+        session.exec(
+            select(TemplateSubscription).where(
+                TemplateSubscription.template_id == template_id,
+                TemplateSubscription.user_id == current_user.user_id,
+            )
+        )
+    )
+    for row in rows:
+        session.delete(row)
+    if rows:
+        session.commit()
+    count_map = _template_subscribed_count_map(session, [template_id])
+    return _template_to_read(template, is_subscribed=False, subscribed_count=int(count_map.get(template_id, 0)))
 
 
 @router.post("/workflows/{workflow_id}/publish-template", response_model=TemplateRead)

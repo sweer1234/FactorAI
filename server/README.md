@@ -28,6 +28,8 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/runs`
 - `GET /api/reports/{workflow_id}`
 - `GET /api/templates`
+- `POST /api/templates/{id}/subscribe`
+- `DELETE /api/templates/{id}/subscribe`
 - `POST /api/workflows/{id}/publish-template`
 - `POST /api/templates/{id}/clone`
 - `GET /api/templates/{id}/versions`

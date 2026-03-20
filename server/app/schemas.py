@@ -65,6 +65,8 @@ class TemplateRead(BaseModel):
     owner_id: str | None = None
     official: bool
     template_group: str
+    is_subscribed: bool = False
+    subscribed_count: int = 0
     graph: WorkflowGraph
 
 
