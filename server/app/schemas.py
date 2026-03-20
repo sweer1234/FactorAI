@@ -44,6 +44,7 @@ class WorkflowRead(BaseModel):
     last_run: datetime | None = None
     description: str | None = None
     owner_id: str | None = None
+    run_policy: dict[str, Any] = Field(default_factory=dict)
     source_template_id: str | None = None
     slo_profile: str | None = None
     slo_overrides: dict[str, int | float] = Field(default_factory=dict)
@@ -125,6 +126,19 @@ class RunRead(BaseModel):
 
 
 class RunRetryRequest(BaseModel):
+    strategy: Literal["immediate", "fixed_backoff"] = "immediate"
+    max_attempts: int = Field(default=1, ge=1, le=5)
+    backoff_sec: int = Field(default=0, ge=0, le=300)
+
+
+class WorkflowRunPolicyRead(BaseModel):
+    workflow_id: str
+    strategy: Literal["immediate", "fixed_backoff"] = "immediate"
+    max_attempts: int = Field(default=1, ge=1, le=5)
+    backoff_sec: int = Field(default=0, ge=0, le=300)
+
+
+class WorkflowRunPolicyUpdateRequest(BaseModel):
     strategy: Literal["immediate", "fixed_backoff"] = "immediate"
     max_attempts: int = Field(default=1, ge=1, le=5)
     backoff_sec: int = Field(default=0, ge=0, le=300)

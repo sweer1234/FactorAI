@@ -48,6 +48,8 @@ from .schemas import (
     RunLogRead,
     RunObservabilityRead,
     RunRetryRequest,
+    WorkflowRunPolicyRead,
+    WorkflowRunPolicyUpdateRequest,
     RunRead,
     TemplateRead,
     TemplateVersionCreateRequest,
@@ -150,7 +152,28 @@ def _graph_version_diff(from_graph: dict[str, Any], to_graph: dict[str, Any]) ->
     )
 
 
+def _normalize_run_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+    raw = policy or {}
+    strategy = str(raw.get("strategy") or "immediate")
+    if strategy not in {"immediate", "fixed_backoff"}:
+        strategy = "immediate"
+    try:
+        max_attempts = int(raw.get("max_attempts", 1))
+    except (TypeError, ValueError):
+        max_attempts = 1
+    try:
+        backoff_sec = int(raw.get("backoff_sec", 0))
+    except (TypeError, ValueError):
+        backoff_sec = 0
+    return {
+        "strategy": strategy,
+        "max_attempts": max(1, min(5, max_attempts)),
+        "backoff_sec": max(0, min(300, backoff_sec)),
+    }
+
+
 def _workflow_to_read(row: Workflow) -> WorkflowRead:
+    run_policy = _normalize_run_policy(row.run_policy or {})
     return WorkflowRead(
         id=row.id,
         name=row.name,
@@ -161,6 +184,7 @@ def _workflow_to_read(row: Workflow) -> WorkflowRead:
         last_run=row.last_run,
         description=row.description,
         owner_id=row.owner_id,
+        run_policy=run_policy,
         source_template_id=row.source_template_id,
         slo_profile=row.slo_profile,
         slo_overrides={key: float(value) for key, value in (row.slo_overrides or {}).items()},
@@ -737,6 +761,7 @@ def create_workflow(
         updated_at=datetime.utcnow(),
         description=payload.description,
         owner_id=current_user.user_id,
+        run_policy=_normalize_run_policy({}),
         source_template_id=payload.source_template_id,
         graph=(payload.graph.model_dump() if payload.graph else {"nodes": [], "edges": []}),
     )
@@ -989,14 +1014,66 @@ def save_draft(
     return _workflow_to_read(row)
 
 
+@router.get("/workflows/{workflow_id}/run-policy", response_model=WorkflowRunPolicyRead)
+def get_workflow_run_policy(
+    workflow_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    row = _ensure_workflow_access(session, workflow_id, current_user)
+    policy = _normalize_run_policy(row.run_policy or {})
+    return WorkflowRunPolicyRead(
+        workflow_id=workflow_id,
+        strategy=policy["strategy"],
+        max_attempts=int(policy["max_attempts"]),
+        backoff_sec=int(policy["backoff_sec"]),
+    )
+
+
+@router.put("/workflows/{workflow_id}/run-policy", response_model=WorkflowRunPolicyRead)
+def update_workflow_run_policy(
+    workflow_id: str,
+    payload: WorkflowRunPolicyUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    row = _ensure_workflow_access(session, workflow_id, current_user)
+    policy = _normalize_run_policy(
+        {
+            "strategy": payload.strategy,
+            "max_attempts": payload.max_attempts,
+            "backoff_sec": payload.backoff_sec,
+        }
+    )
+    row.run_policy = policy
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return WorkflowRunPolicyRead(
+        workflow_id=workflow_id,
+        strategy=policy["strategy"],
+        max_attempts=int(policy["max_attempts"]),
+        backoff_sec=int(policy["backoff_sec"]),
+    )
+
+
 @router.post("/workflows/{workflow_id}/run", response_model=RunRead)
 def run_workflow(
     workflow_id: str,
     session: Session = Depends(get_session),
     current_user: AuthUser = Depends(require_request_access),
 ):
-    _ensure_workflow_access(session, workflow_id, current_user)
-    run = start_run(workflow_id, owner_id=current_user.user_id)
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
+    policy = _normalize_run_policy(workflow.run_policy or {})
+    run = start_run(
+        workflow_id,
+        owner_id=current_user.user_id,
+        retry_attempt=1,
+        retry_max_attempts=int(policy["max_attempts"]),
+        retry_strategy=str(policy["strategy"]),
+        retry_backoff_sec=int(policy["backoff_sec"]),
+    )
     return _run_to_read(run)
 
 
@@ -1167,6 +1244,7 @@ def clone_template(
         status="draft",
         updated_at=datetime.utcnow(),
         owner_id=current_user.user_id,
+        run_policy=_normalize_run_policy({}),
         description=template.description,
         source_template_id=template.id,
         graph=template.graph,
@@ -1219,14 +1297,13 @@ def retry_run_api(
     current_user: AuthUser = Depends(require_request_access),
 ):
     _ensure_run_access(session, run_id, current_user)
-    retry_payload = payload or RunRetryRequest()
     try:
         new_run = retry_run(
             run_id,
             owner_id=current_user.user_id,
-            strategy=retry_payload.strategy,
-            max_attempts=retry_payload.max_attempts,
-            backoff_sec=retry_payload.backoff_sec,
+            strategy=(payload.strategy if payload else None),
+            max_attempts=(payload.max_attempts if payload else None),
+            backoff_sec=(payload.backoff_sec if payload else None),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

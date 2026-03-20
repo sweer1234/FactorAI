@@ -41,6 +41,8 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE workflow ADD COLUMN slo_overrides JSON"))
             if not _column_exists(conn, "workflow", "owner_id"):
                 conn.execute(text("ALTER TABLE workflow ADD COLUMN owner_id TEXT"))
+            if not _column_exists(conn, "workflow", "run_policy"):
+                conn.execute(text("ALTER TABLE workflow ADD COLUMN run_policy JSON"))
 
         # run 表新增字段
         if _table_exists(conn, "run"):

@@ -822,9 +822,9 @@ def retry_run(
     run_id: str,
     *,
     owner_id: str | None = None,
-    strategy: str = "immediate",
-    max_attempts: int = 1,
-    backoff_sec: int = 0,
+    strategy: str | None = None,
+    max_attempts: int | None = None,
+    backoff_sec: int | None = None,
 ) -> Run:
     with Session(engine) as session:
         run = session.get(Run, run_id)
@@ -834,15 +834,18 @@ def retry_run(
             raise ValueError("only failed/cancelled run can retry")
         workflow_id = run.workflow_id
         origin = run.retry_origin_run_id or run.id
+        resolved_strategy = str(strategy or run.retry_strategy or "immediate")
+        resolved_max_attempts = int(max_attempts if max_attempts is not None else (run.retry_max_attempts or 1))
+        resolved_backoff_sec = int(backoff_sec if backoff_sec is not None else (run.retry_backoff_sec or 0))
     return start_run(
         workflow_id,
         owner_id=owner_id or run.owner_id,
         retried_from_run_id=run_id,
         retry_origin_run_id=origin,
         retry_attempt=1,
-        retry_max_attempts=max(1, min(5, int(max_attempts))),
-        retry_strategy=strategy,
-        retry_backoff_sec=max(0, min(300, int(backoff_sec))),
+        retry_max_attempts=max(1, min(5, int(resolved_max_attempts))),
+        retry_strategy=resolved_strategy,
+        retry_backoff_sec=max(0, min(300, int(resolved_backoff_sec))),
     )
 
 

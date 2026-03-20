@@ -91,6 +91,11 @@ npm run build
 
 当设置 `max_attempts > 1` 时，失败后会自动按策略继续尝试，直到达到上限。
 
+也可按工作流维度配置默认重试策略：
+
+- `GET /api/workflows/{workflow_id}/run-policy`
+- `PUT /api/workflows/{workflow_id}/run-policy`
+
 ## 已实现页面（MVP）
 
 1. 首页（品牌入口）

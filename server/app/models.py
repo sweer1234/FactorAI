@@ -19,6 +19,7 @@ class Workflow(SQLModel, table=True):
     last_run: datetime | None = None
     description: str | None = None
     owner_id: str | None = Field(default=None, index=True)
+    run_policy: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     source_template_id: str | None = None
     slo_profile: str | None = Field(default=None, index=True)
     slo_overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
