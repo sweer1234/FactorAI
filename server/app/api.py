@@ -9,14 +9,14 @@ from typing import Any
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import networkx as nx
 from sqlmodel import Session, select
 
 from .config import settings
 from .db import get_session
 from .models import NodeSpec, Report, Run, RunLog, Template, TemplateVersion, UploadedArtifact, Workflow, WorkflowGraphRevision
-from .security import AuthUser, require_request_access, require_role
+from .security import AuthUser, require_request_access
 from .schemas import (
     AlertIncidentRead,
     ArtifactRead,
@@ -47,11 +47,15 @@ from .schemas import (
     TrendPointRead,
     RunLogRead,
     RunObservabilityRead,
+    RunBatchActionRead,
+    RunBatchActionRequest,
+    RunBatchActionItemRead,
     RunRetryRequest,
     WorkflowRunPolicyRead,
     WorkflowRunPolicyUpdateRequest,
     RunRead,
     TemplateRead,
+    TemplatePublishRequest,
     TemplateVersionCreateRequest,
     TemplateVersionDiffRead,
     TemplateVersionRead,
@@ -116,6 +120,33 @@ def _ensure_run_access(session: Session, run_id: str, user: AuthUser) -> Run:
     if not _can_access_owner(row.owner_id, user):
         raise HTTPException(status_code=403, detail="forbidden: run access denied")
     return row
+
+
+def _can_access_template(template: Template, user: AuthUser) -> bool:
+    if _is_admin(user):
+        return True
+    if template.official:
+        return True
+    if not template.owner_id:
+        return False
+    return template.owner_id == user.user_id
+
+
+def _ensure_template_access(session: Session, template_id: str, user: AuthUser) -> Template:
+    row = session.get(Template, template_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="template not found")
+    if not _can_access_template(row, user):
+        raise HTTPException(status_code=403, detail="forbidden: template access denied")
+    return row
+
+
+def _can_manage_template(template: Template, user: AuthUser) -> bool:
+    if _is_admin(user):
+        return True
+    if template.official:
+        return False
+    return bool(template.owner_id and template.owner_id == user.user_id)
 
 
 def _graph_version_diff(from_graph: dict[str, Any], to_graph: dict[str, Any]) -> TemplateVersionDiffRead:
@@ -200,6 +231,7 @@ def _template_to_read(row: Template) -> TemplateRead:
         tags=row.tags,
         updated_at=row.updated_at,
         category=row.category,
+        owner_id=row.owner_id,
         official=row.official,
         template_group=row.template_group,
         graph=row.graph or {"nodes": [], "edges": []},
@@ -1082,11 +1114,14 @@ def get_templates(
     session: Session = Depends(get_session),
     official: bool | None = Query(default=None),
     keyword: str | None = Query(default=None),
+    current_user: AuthUser = Depends(require_request_access),
 ):
     query = select(Template).order_by(Template.updated_at.desc())
     if official is not None:
         query = query.where(Template.official == official)
     rows = list(session.exec(query))
+    if not _is_admin(current_user):
+        rows = [row for row in rows if _can_access_template(row, current_user)]
     if keyword:
         key = keyword.lower()
         rows = [row for row in rows if key in row.name.lower() or key in row.description.lower()]
@@ -1094,18 +1129,60 @@ def get_templates(
 
 
 @router.get("/templates/{template_id}", response_model=TemplateRead)
-def get_template(template_id: str, session: Session = Depends(get_session)):
-    row = session.get(Template, template_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="template not found")
+def get_template(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    row = _ensure_template_access(session, template_id, current_user)
     return _template_to_read(row)
 
 
+@router.post("/workflows/{workflow_id}/publish-template", response_model=TemplateRead)
+def publish_workflow_as_template(
+    workflow_id: str,
+    payload: TemplatePublishRequest,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
+    is_official = bool(payload.official and _is_admin(current_user))
+    template = Template(
+        id=f"tpl-user-{uuid.uuid4().hex[:8]}",
+        name=(payload.name or workflow.name or "未命名模板").strip(),
+        description=(payload.description or workflow.description or "从工作流发布").strip(),
+        tags=payload.tags or workflow.tags,
+        updated_at=datetime.utcnow(),
+        category=(payload.category or workflow.category or "未分类").strip(),
+        owner_id=(None if is_official else current_user.user_id),
+        official=is_official,
+        template_group=(payload.template_group or ("官方模板" if is_official else "我创建的模板")).strip(),
+        graph=workflow.graph or {"nodes": [], "edges": []},
+        created_at=datetime.utcnow(),
+    )
+    session.add(template)
+    session.add(
+        TemplateVersion(
+            id=f"tv-{uuid.uuid4().hex[:10]}",
+            template_id=template.id,
+            version="1.0.0",
+            changelog=f"publish from workflow {workflow.id}",
+            graph=template.graph,
+            created_at=datetime.utcnow(),
+        )
+    )
+    session.commit()
+    session.refresh(template)
+    return _template_to_read(template)
+
+
 @router.get("/templates/{template_id}/versions", response_model=list[TemplateVersionRead])
-def list_template_versions(template_id: str, session: Session = Depends(get_session)):
-    template = session.get(Template, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="template not found")
+def list_template_versions(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_template_access(session, template_id, current_user)
     rows = list(
         session.exec(
             select(TemplateVersion).where(TemplateVersion.template_id == template_id).order_by(TemplateVersion.created_at.desc())
@@ -1119,11 +1196,11 @@ def create_template_version(
     template_id: str,
     payload: TemplateVersionCreateRequest,
     session: Session = Depends(get_session),
-    _admin: AuthUser = Depends(require_role("admin")),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    template = session.get(Template, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="template not found")
+    template = _ensure_template_access(session, template_id, current_user)
+    if not _can_manage_template(template, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: template manage denied")
     rows = list(session.exec(select(TemplateVersion).where(TemplateVersion.template_id == template_id)))
     existing_versions = [item.version for item in rows]
     next_version = (payload.version or "").strip() or _next_template_version(existing_versions)
@@ -1148,11 +1225,11 @@ def rollback_template_version(
     template_id: str,
     payload: TemplateVersionRollbackRequest,
     session: Session = Depends(get_session),
-    _admin: AuthUser = Depends(require_role("admin")),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    template = session.get(Template, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="template not found")
+    template = _ensure_template_access(session, template_id, current_user)
+    if not _can_manage_template(template, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: template manage denied")
     target: TemplateVersion | None = None
     if payload.version_id:
         target = session.get(TemplateVersion, payload.version_id)
@@ -1202,10 +1279,9 @@ def get_template_version_diff(
     from_version: str = Query(..., description="起始版本号"),
     to_version: str = Query(..., description="目标版本号"),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    template = session.get(Template, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="template not found")
+    _ensure_template_access(session, template_id, current_user)
     from_row = session.exec(
         select(TemplateVersion).where(
             TemplateVersion.template_id == template_id,
@@ -1227,15 +1303,92 @@ def get_template_version_diff(
     return diff
 
 
+@router.get("/templates/{template_id}/versions/diff-export")
+def export_template_version_diff(
+    template_id: str,
+    from_version: str = Query(..., description="起始版本号"),
+    to_version: str = Query(..., description="目标版本号"),
+    format: str = Query(default="markdown", pattern="^(markdown|csv)$"),
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_template_access(session, template_id, current_user)
+    from_row = session.exec(
+        select(TemplateVersion).where(
+            TemplateVersion.template_id == template_id,
+            TemplateVersion.version == from_version,
+        )
+    ).first()
+    to_row = session.exec(
+        select(TemplateVersion).where(
+            TemplateVersion.template_id == template_id,
+            TemplateVersion.version == to_version,
+        )
+    ).first()
+    if not from_row or not to_row:
+        raise HTTPException(status_code=404, detail="template version not found")
+
+    diff = _graph_version_diff(from_row.graph or {}, to_row.graph or {})
+    diff.template_id = template_id
+    diff.from_version = from_version
+    diff.to_version = to_version
+    if format == "csv":
+        rows = [
+            "section,item",
+            *[f"added_nodes,{item}" for item in diff.added_nodes],
+            *[f"removed_nodes,{item}" for item in diff.removed_nodes],
+            *[f"changed_nodes,{item}" for item in diff.changed_nodes],
+            *[f"added_edges,{item}" for item in diff.added_edges],
+            *[f"removed_edges,{item}" for item in diff.removed_edges],
+        ]
+        content = "\n".join(rows)
+        filename = f"{template_id}-{from_version}-to-{to_version}-diff.csv"
+        return Response(
+            content=content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+        )
+
+    lines = [
+        f"# 模板版本差异报告 · {template_id}",
+        "",
+        f"- from: `{from_version}`",
+        f"- to: `{to_version}`",
+        "",
+        "## 摘要",
+        *[f"- {key}: {value}" for key, value in diff.summary.items()],
+        "",
+        "## 新增节点",
+        *(f"- {item}" for item in diff.added_nodes) if diff.added_nodes else ("- 无",),
+        "",
+        "## 移除节点",
+        *(f"- {item}" for item in diff.removed_nodes) if diff.removed_nodes else ("- 无",),
+        "",
+        "## 变更节点",
+        *(f"- {item}" for item in diff.changed_nodes) if diff.changed_nodes else ("- 无",),
+        "",
+        "## 新增边",
+        *(f"- {item}" for item in diff.added_edges) if diff.added_edges else ("- 无",),
+        "",
+        "## 移除边",
+        *(f"- {item}" for item in diff.removed_edges) if diff.removed_edges else ("- 无",),
+    ]
+    content = "\n".join(lines)
+    filename = f"{template_id}-{from_version}-to-{to_version}-diff.md"
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+    )
+
+
 @router.post("/templates/{template_id}/clone", response_model=WorkflowRead)
 def clone_template(
     template_id: str,
     session: Session = Depends(get_session),
     current_user: AuthUser = Depends(require_request_access),
 ):
-    template = session.get(Template, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="template not found")
+    template = _ensure_template_access(session, template_id, current_user)
     workflow = Workflow(
         id=f"wf-{uuid.uuid4().hex[:8]}",
         name=f"{template.name}-副本",
@@ -1308,6 +1461,68 @@ def retry_run_api(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_to_read(new_run)
+
+
+@router.post("/runs/batch-action", response_model=RunBatchActionRead)
+def run_batch_action(
+    payload: RunBatchActionRequest,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    run_ids = [item for item in payload.run_ids if item]
+    if not run_ids:
+        return RunBatchActionRead(action=payload.action, total=0, success=0, failed=0, items=[])
+
+    items: list[RunBatchActionItemRead] = []
+    success = 0
+    for run_id in run_ids:
+        try:
+            _ensure_run_access(session, run_id, current_user)
+            if payload.action == "cancel":
+                row = cancel_run(run_id)
+                if not row:
+                    raise ValueError("run not found")
+                items.append(
+                    RunBatchActionItemRead(
+                        run_id=run_id,
+                        status="ok",
+                        message=f"cancelled:{row.status}",
+                    )
+                )
+            else:
+                retry_payload = payload.retry
+                row = retry_run(
+                    run_id,
+                    owner_id=current_user.user_id,
+                    strategy=(retry_payload.strategy if retry_payload else None),
+                    max_attempts=(retry_payload.max_attempts if retry_payload else None),
+                    backoff_sec=(retry_payload.backoff_sec if retry_payload else None),
+                )
+                items.append(
+                    RunBatchActionItemRead(
+                        run_id=run_id,
+                        status="ok",
+                        message="retry created",
+                        new_run_id=row.id,
+                    )
+                )
+            success += 1
+        except Exception as exc:  # noqa: BLE001
+            items.append(
+                RunBatchActionItemRead(
+                    run_id=run_id,
+                    status="failed",
+                    message=str(exc),
+                )
+            )
+    failed = len(items) - success
+    return RunBatchActionRead(
+        action=payload.action,
+        total=len(items),
+        success=success,
+        failed=failed,
+        items=items,
+    )
 
 
 @router.get("/runs/{run_id}/logs", response_model=list[RunLogRead])

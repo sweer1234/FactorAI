@@ -95,6 +95,13 @@ npm run build
 
 - `GET /api/workflows/{workflow_id}/run-policy`
 - `PUT /api/workflows/{workflow_id}/run-policy`
+- `POST /api/runs/batch-action`（批量取消/批量重试）
+
+## 模板发布与版本差异导出（新增）
+
+- `POST /api/workflows/{workflow_id}/publish-template`
+- `GET /api/templates/{template_id}/versions/diff`
+- `GET /api/templates/{template_id}/versions/diff-export?format=markdown|csv`
 
 ## 已实现页面（MVP）
 

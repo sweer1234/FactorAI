@@ -34,6 +34,7 @@ class Template(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     updated_at: datetime = Field(default_factory=now_utc)
     category: str
+    owner_id: str | None = Field(default=None, index=True)
     official: bool = Field(default=True)
     template_group: str = Field(default="官方模板")
     graph: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))

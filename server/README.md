@@ -28,14 +28,17 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/runs`
 - `GET /api/reports/{workflow_id}`
 - `GET /api/templates`
+- `POST /api/workflows/{id}/publish-template`
 - `POST /api/templates/{id}/clone`
 - `GET /api/templates/{id}/versions`
 - `POST /api/templates/{id}/versions`（admin）
 - `POST /api/templates/{id}/versions/rollback`（admin）
 - `GET /api/templates/{id}/versions/diff?from_version=&to_version=`
+- `GET /api/templates/{id}/versions/diff-export?from_version=&to_version=&format=markdown|csv`
 - `GET /api/node-library`
 - `POST /api/runs/{id}/cancel`
 - `POST /api/runs/{id}/retry`
+- `POST /api/runs/batch-action`
 - `GET /api/workflows/{id}/run-policy`
 - `PUT /api/workflows/{id}/run-policy`
 

@@ -62,9 +62,19 @@ class TemplateRead(BaseModel):
     tags: list[str]
     updated_at: datetime
     category: str
+    owner_id: str | None = None
     official: bool
     template_group: str
     graph: WorkflowGraph
+
+
+class TemplatePublishRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    category: str | None = None
+    template_group: str | None = None
+    official: bool = False
 
 
 class TemplateVersionRead(BaseModel):
@@ -129,6 +139,27 @@ class RunRetryRequest(BaseModel):
     strategy: Literal["immediate", "fixed_backoff"] = "immediate"
     max_attempts: int = Field(default=1, ge=1, le=5)
     backoff_sec: int = Field(default=0, ge=0, le=300)
+
+
+class RunBatchActionRequest(BaseModel):
+    action: Literal["cancel", "retry"]
+    run_ids: list[str] = Field(default_factory=list)
+    retry: RunRetryRequest | None = None
+
+
+class RunBatchActionItemRead(BaseModel):
+    run_id: str
+    status: str
+    message: str
+    new_run_id: str | None = None
+
+
+class RunBatchActionRead(BaseModel):
+    action: str
+    total: int
+    success: int
+    failed: int
+    items: list[RunBatchActionItemRead] = Field(default_factory=list)
 
 
 class WorkflowRunPolicyRead(BaseModel):

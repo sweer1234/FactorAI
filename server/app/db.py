@@ -32,6 +32,8 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE template ADD COLUMN template_group TEXT DEFAULT '官方模板'"))
             if not _column_exists(conn, "template", "created_at"):
                 conn.execute(text("ALTER TABLE template ADD COLUMN created_at DATETIME"))
+            if not _column_exists(conn, "template", "owner_id"):
+                conn.execute(text("ALTER TABLE template ADD COLUMN owner_id TEXT"))
 
         # workflow 表新增字段
         if _table_exists(conn, "workflow"):
