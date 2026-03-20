@@ -39,6 +39,8 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE workflow ADD COLUMN slo_profile TEXT"))
             if not _column_exists(conn, "workflow", "slo_overrides"):
                 conn.execute(text("ALTER TABLE workflow ADD COLUMN slo_overrides JSON"))
+            if not _column_exists(conn, "workflow", "owner_id"):
+                conn.execute(text("ALTER TABLE workflow ADD COLUMN owner_id TEXT"))
 
         # run 表新增字段
         if _table_exists(conn, "run"):
@@ -50,6 +52,18 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(text("ALTER TABLE run ADD COLUMN cancel_requested BOOLEAN DEFAULT 0"))
             if not _column_exists(conn, "run", "retried_from_run_id"):
                 conn.execute(text("ALTER TABLE run ADD COLUMN retried_from_run_id TEXT"))
+            if not _column_exists(conn, "run", "owner_id"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN owner_id TEXT"))
+            if not _column_exists(conn, "run", "retry_origin_run_id"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN retry_origin_run_id TEXT"))
+            if not _column_exists(conn, "run", "retry_attempt"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN retry_attempt INTEGER DEFAULT 1"))
+            if not _column_exists(conn, "run", "retry_max_attempts"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN retry_max_attempts INTEGER DEFAULT 1"))
+            if not _column_exists(conn, "run", "retry_strategy"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN retry_strategy TEXT DEFAULT 'immediate'"))
+            if not _column_exists(conn, "run", "retry_backoff_sec"):
+                conn.execute(text("ALTER TABLE run ADD COLUMN retry_backoff_sec INTEGER DEFAULT 0"))
 
         # runlog 表新增字段
         if _table_exists(conn, "runlog"):

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,7 @@ class WorkflowRead(BaseModel):
     updated_at: datetime
     last_run: datetime | None = None
     description: str | None = None
+    owner_id: str | None = None
     source_template_id: str | None = None
     slo_profile: str | None = None
     slo_overrides: dict[str, int | float] = Field(default_factory=dict)
@@ -91,6 +92,18 @@ class TemplateVersionRollbackRead(BaseModel):
     created_version: TemplateVersionRead
 
 
+class TemplateVersionDiffRead(BaseModel):
+    template_id: str
+    from_version: str
+    to_version: str
+    summary: dict[str, int] = Field(default_factory=dict)
+    added_nodes: list[str] = Field(default_factory=list)
+    removed_nodes: list[str] = Field(default_factory=list)
+    changed_nodes: list[str] = Field(default_factory=list)
+    added_edges: list[str] = Field(default_factory=list)
+    removed_edges: list[str] = Field(default_factory=list)
+
+
 class RunRead(BaseModel):
     id: str
     workflow_id: str
@@ -101,8 +114,20 @@ class RunRead(BaseModel):
     message: str
     logs: list[str]
     observability: dict[str, Any] = Field(default_factory=dict)
+    owner_id: str | None = None
     cancel_requested: bool = False
     retried_from_run_id: str | None = None
+    retry_origin_run_id: str | None = None
+    retry_attempt: int = 1
+    retry_max_attempts: int = 1
+    retry_strategy: str = "immediate"
+    retry_backoff_sec: int = 0
+
+
+class RunRetryRequest(BaseModel):
+    strategy: Literal["immediate", "fixed_backoff"] = "immediate"
+    max_attempts: int = Field(default=1, ge=1, le=5)
+    backoff_sec: int = Field(default=0, ge=0, le=300)
 
 
 class AuthUserRead(BaseModel):

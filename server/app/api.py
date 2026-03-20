@@ -47,9 +47,11 @@ from .schemas import (
     TrendPointRead,
     RunLogRead,
     RunObservabilityRead,
+    RunRetryRequest,
     RunRead,
     TemplateRead,
     TemplateVersionCreateRequest,
+    TemplateVersionDiffRead,
     TemplateVersionRead,
     TemplateVersionRollbackRead,
     TemplateVersionRollbackRequest,
@@ -80,6 +82,74 @@ from .services.slo import DEFAULT_THRESHOLDS, PROFILE_THRESHOLDS, resolve_slo_pr
 router = APIRouter(dependencies=[Depends(require_request_access)])
 
 
+def _is_admin(user: AuthUser) -> bool:
+    return user.role == "admin"
+
+
+def _can_access_owner(owner_id: str | None, user: AuthUser) -> bool:
+    if _is_admin(user):
+        return True
+    if not owner_id:
+        return True
+    return owner_id == user.user_id
+
+
+def _ensure_workflow_access(
+    session: Session,
+    workflow_id: str,
+    user: AuthUser,
+) -> Workflow:
+    row = session.get(Workflow, workflow_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    if not _can_access_owner(row.owner_id, user):
+        raise HTTPException(status_code=403, detail="forbidden: workflow access denied")
+    return row
+
+
+def _ensure_run_access(session: Session, run_id: str, user: AuthUser) -> Run:
+    row = session.get(Run, run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    if not _can_access_owner(row.owner_id, user):
+        raise HTTPException(status_code=403, detail="forbidden: run access denied")
+    return row
+
+
+def _graph_version_diff(from_graph: dict[str, Any], to_graph: dict[str, Any]) -> TemplateVersionDiffRead:
+    from_nodes = {str(item.get("id")): str(item.get("label") or item.get("id")) for item in (from_graph or {}).get("nodes", [])}
+    to_nodes = {str(item.get("id")): str(item.get("label") or item.get("id")) for item in (to_graph or {}).get("nodes", [])}
+    from_edges = {f"{item.get('source')}->{item.get('target')}" for item in (from_graph or {}).get("edges", [])}
+    to_edges = {f"{item.get('source')}->{item.get('target')}" for item in (to_graph or {}).get("edges", [])}
+
+    added_node_ids = sorted([item for item in to_nodes if item not in from_nodes])
+    removed_node_ids = sorted([item for item in from_nodes if item not in to_nodes])
+    changed_node_ids = sorted([item for item in to_nodes if item in from_nodes and to_nodes[item] != from_nodes[item]])
+    added_edges = sorted([item for item in to_edges if item not in from_edges])
+    removed_edges = sorted([item for item in from_edges if item not in to_edges])
+    return TemplateVersionDiffRead(
+        template_id="",
+        from_version="",
+        to_version="",
+        summary={
+            "from_nodes": len(from_nodes),
+            "to_nodes": len(to_nodes),
+            "from_edges": len(from_edges),
+            "to_edges": len(to_edges),
+            "added_nodes": len(added_node_ids),
+            "removed_nodes": len(removed_node_ids),
+            "changed_nodes": len(changed_node_ids),
+            "added_edges": len(added_edges),
+            "removed_edges": len(removed_edges),
+        },
+        added_nodes=[to_nodes[item] for item in added_node_ids],
+        removed_nodes=[from_nodes[item] for item in removed_node_ids],
+        changed_nodes=[f"{from_nodes[item]} -> {to_nodes[item]}" for item in changed_node_ids],
+        added_edges=added_edges,
+        removed_edges=removed_edges,
+    )
+
+
 def _workflow_to_read(row: Workflow) -> WorkflowRead:
     return WorkflowRead(
         id=row.id,
@@ -90,6 +160,7 @@ def _workflow_to_read(row: Workflow) -> WorkflowRead:
         updated_at=row.updated_at,
         last_run=row.last_run,
         description=row.description,
+        owner_id=row.owner_id,
         source_template_id=row.source_template_id,
         slo_profile=row.slo_profile,
         slo_overrides={key: float(value) for key, value in (row.slo_overrides or {}).items()},
@@ -149,8 +220,14 @@ def _run_to_read(row: Run) -> RunRead:
         message=row.message,
         logs=row.logs,
         observability=row.observability or {},
+        owner_id=row.owner_id,
         cancel_requested=bool(row.cancel_requested),
         retried_from_run_id=row.retried_from_run_id,
+        retry_origin_run_id=row.retry_origin_run_id,
+        retry_attempt=int(row.retry_attempt or 1),
+        retry_max_attempts=int(row.retry_max_attempts or 1),
+        retry_strategy=row.retry_strategy or "immediate",
+        retry_backoff_sec=int(row.retry_backoff_sec or 0),
     )
 
 
@@ -625,21 +702,32 @@ def get_node_spec(node_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/workflows", response_model=list[WorkflowRead])
-def get_workflows(session: Session = Depends(get_session)):
+def get_workflows(
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
     rows = list(session.exec(select(Workflow).order_by(Workflow.updated_at.desc())))
+    if not _is_admin(current_user):
+        rows = [row for row in rows if _can_access_owner(row.owner_id, current_user)]
     return [_workflow_to_read(row) for row in rows]
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowRead)
-def get_workflow(workflow_id: str, session: Session = Depends(get_session)):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+def get_workflow(
+    workflow_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     return _workflow_to_read(row)
 
 
 @router.post("/workflows", response_model=WorkflowRead)
-def create_workflow(payload: WorkflowCreate, session: Session = Depends(get_session)):
+def create_workflow(
+    payload: WorkflowCreate,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
     workflow = Workflow(
         id=f"wf-{uuid.uuid4().hex[:8]}",
         name=payload.name.strip(),
@@ -648,6 +736,7 @@ def create_workflow(payload: WorkflowCreate, session: Session = Depends(get_sess
         status="draft",
         updated_at=datetime.utcnow(),
         description=payload.description,
+        owner_id=current_user.user_id,
         source_template_id=payload.source_template_id,
         graph=(payload.graph.model_dump() if payload.graph else {"nodes": [], "edges": []}),
     )
@@ -663,10 +752,9 @@ def update_workflow_graph(
     payload: GraphUpdate,
     strict_contract: bool = Query(default=False),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     nodespec_map = _nodespec_map(session)
     compile_result = compile_workflow_contract(payload.graph.model_dump(), nodespec_map, strict=strict_contract)
     if strict_contract and compile_result.get("errors"):
@@ -702,10 +790,9 @@ def apply_contract_fix_suggestions(
     workflow_id: str,
     payload: ContractFixApplyRequest,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     nodespec_map = _nodespec_map(session)
     compile_result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=payload.strict)
     suggestions = compile_result.get("suggestions", [])
@@ -756,10 +843,9 @@ def compile_workflow_contract_check(
     workflow_id: str,
     strict: bool = Query(default=False),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     nodespec_map = _nodespec_map(session)
     result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
     return _to_compile_read(result, strict)
@@ -770,10 +856,9 @@ def get_contract_fix_suggestions(
     workflow_id: str,
     strict: bool = Query(default=False),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     nodespec_map = _nodespec_map(session)
     result = compile_workflow_contract(row.graph or {"nodes": [], "edges": []}, nodespec_map, strict=strict)
     return [ContractFixSuggestionRead(**item) for item in result.get("suggestions", [])]
@@ -784,10 +869,9 @@ def rollback_contract_fixes(
     workflow_id: str,
     payload: ContractFixRollbackRequest,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     if payload.revision_id:
         target_revision = session.get(WorkflowGraphRevision, payload.revision_id)
         if not target_revision or target_revision.workflow_id != workflow_id:
@@ -841,10 +925,9 @@ def list_workflow_graph_revisions(
     source: str | None = Query(default=None),
     limit: int = Query(default=30, ge=1, le=200),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    _ensure_workflow_access(session, workflow_id, current_user)
     query = select(WorkflowGraphRevision).where(WorkflowGraphRevision.workflow_id == workflow_id)
     if source:
         query = query.where(WorkflowGraphRevision.source == source)
@@ -867,10 +950,9 @@ def update_workflow_slo_config(
     workflow_id: str,
     payload: SLOConfigUpdateRequest,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     if payload.profile and payload.profile not in PROFILE_THRESHOLDS:
         raise HTTPException(status_code=400, detail=f"unsupported profile: {payload.profile}")
     row.slo_profile = payload.profile or None
@@ -893,10 +975,12 @@ def update_workflow_slo_config(
 
 
 @router.post("/workflows/{workflow_id}/draft", response_model=WorkflowRead)
-def save_draft(workflow_id: str, session: Session = Depends(get_session)):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
+def save_draft(
+    workflow_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    row = _ensure_workflow_access(session, workflow_id, current_user)
     row.status = "draft"
     row.updated_at = datetime.utcnow()
     session.add(row)
@@ -906,11 +990,13 @@ def save_draft(workflow_id: str, session: Session = Depends(get_session)):
 
 
 @router.post("/workflows/{workflow_id}/run", response_model=RunRead)
-def run_workflow(workflow_id: str, session: Session = Depends(get_session)):
-    row = session.get(Workflow, workflow_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="workflow not found")
-    run = start_run(workflow_id)
+def run_workflow(
+    workflow_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_workflow_access(session, workflow_id, current_user)
+    run = start_run(workflow_id, owner_id=current_user.user_id)
     return _run_to_read(run)
 
 
@@ -1033,8 +1119,43 @@ def rollback_template_version(
     )
 
 
+@router.get("/templates/{template_id}/versions/diff", response_model=TemplateVersionDiffRead)
+def get_template_version_diff(
+    template_id: str,
+    from_version: str = Query(..., description="起始版本号"),
+    to_version: str = Query(..., description="目标版本号"),
+    session: Session = Depends(get_session),
+):
+    template = session.get(Template, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="template not found")
+    from_row = session.exec(
+        select(TemplateVersion).where(
+            TemplateVersion.template_id == template_id,
+            TemplateVersion.version == from_version,
+        )
+    ).first()
+    to_row = session.exec(
+        select(TemplateVersion).where(
+            TemplateVersion.template_id == template_id,
+            TemplateVersion.version == to_version,
+        )
+    ).first()
+    if not from_row or not to_row:
+        raise HTTPException(status_code=404, detail="template version not found")
+    diff = _graph_version_diff(from_row.graph or {}, to_row.graph or {})
+    diff.template_id = template_id
+    diff.from_version = from_version
+    diff.to_version = to_version
+    return diff
+
+
 @router.post("/templates/{template_id}/clone", response_model=WorkflowRead)
-def clone_template(template_id: str, session: Session = Depends(get_session)):
+def clone_template(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
     template = session.get(Template, template_id)
     if not template:
         raise HTTPException(status_code=404, detail="template not found")
@@ -1045,6 +1166,7 @@ def clone_template(template_id: str, session: Session = Depends(get_session)):
         tags=template.tags,
         status="draft",
         updated_at=datetime.utcnow(),
+        owner_id=current_user.user_id,
         description=template.description,
         source_template_id=template.id,
         graph=template.graph,
@@ -1056,24 +1178,33 @@ def clone_template(template_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/runs", response_model=list[RunRead])
-def get_runs(session: Session = Depends(get_session)):
+def get_runs(
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
     rows = list_runs(session)
+    if not _is_admin(current_user):
+        rows = [row for row in rows if _can_access_owner(row.owner_id, current_user)]
     return [_run_to_read(row) for row in rows]
 
 
 @router.get("/runs/{run_id}", response_model=RunRead)
-def get_run(run_id: str, session: Session = Depends(get_session)):
-    row = session.get(Run, run_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="run not found")
+def get_run(
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    row = _ensure_run_access(session, run_id, current_user)
     return _run_to_read(row)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunRead)
-def cancel_run_api(run_id: str, session: Session = Depends(get_session)):
-    row = session.get(Run, run_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="run not found")
+def cancel_run_api(
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_run_access(session, run_id, current_user)
     result = cancel_run(run_id)
     if not result:
         raise HTTPException(status_code=404, detail="run not found")
@@ -1081,22 +1212,34 @@ def cancel_run_api(run_id: str, session: Session = Depends(get_session)):
 
 
 @router.post("/runs/{run_id}/retry", response_model=RunRead)
-def retry_run_api(run_id: str, session: Session = Depends(get_session)):
-    row = session.get(Run, run_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="run not found")
+def retry_run_api(
+    run_id: str,
+    payload: RunRetryRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_run_access(session, run_id, current_user)
+    retry_payload = payload or RunRetryRequest()
     try:
-        new_run = retry_run(run_id)
+        new_run = retry_run(
+            run_id,
+            owner_id=current_user.user_id,
+            strategy=retry_payload.strategy,
+            max_attempts=retry_payload.max_attempts,
+            backoff_sec=retry_payload.backoff_sec,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_to_read(new_run)
 
 
 @router.get("/runs/{run_id}/logs", response_model=list[RunLogRead])
-def get_run_logs(run_id: str, session: Session = Depends(get_session)):
-    run = session.get(Run, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="run not found")
+def get_run_logs(
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_run_access(session, run_id, current_user)
     rows = list_run_logs(session, run_id)
     return [
         RunLogRead(
@@ -1116,10 +1259,12 @@ def get_run_logs(run_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/runs/{run_id}/node-states", response_model=list[NodeStateRead])
-def get_run_node_states(run_id: str, session: Session = Depends(get_session)):
-    run = session.get(Run, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="run not found")
+def get_run_node_states(
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_run_access(session, run_id, current_user)
     rows = list_node_states(session, run_id)
     return [
         NodeStateRead(
@@ -1140,10 +1285,12 @@ def get_run_node_states(run_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/runs/{run_id}/observability", response_model=RunObservabilityRead)
-def get_run_metrics(run_id: str, session: Session = Depends(get_session)):
-    run = session.get(Run, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="run not found")
+def get_run_metrics(
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    run = _ensure_run_access(session, run_id, current_user)
     return RunObservabilityRead(
         run_id=run.id,
         workflow_id=run.workflow_id,
@@ -1161,10 +1308,9 @@ def get_run_metric_alerts(
     warn_logs: int | None = Query(default=None),
     error_logs: int | None = Query(default=None),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    run = session.get(Run, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="run not found")
+    run = _ensure_run_access(session, run_id, current_user)
     workflow = session.get(Workflow, run.workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="workflow not found")
@@ -1189,10 +1335,9 @@ def get_run_metric_series(
     metric_name: str | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5000),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    run = session.get(Run, run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="run not found")
+    _ensure_run_access(session, run_id, current_user)
     rows = list_run_metric_points(session, run_id, metric_name=metric_name, limit=limit)
     return [
         RunMetricPointRead(
@@ -1214,10 +1359,9 @@ def get_workflow_metric_series(
     metric_name: str | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5000),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    _ensure_workflow_access(session, workflow_id, current_user)
     rows = list_workflow_metric_points(session, workflow_id, metric_name=metric_name, limit=limit)
     return [
         RunMetricPointRead(
@@ -1238,10 +1382,9 @@ def compare_workflow_runs(
     workflow_id: str,
     run_ids: str | None = Query(default=None, description="逗号分隔 run_id 列表；为空则自动取最近 5 次"),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    _ensure_workflow_access(session, workflow_id, current_user)
     selected_ids = [item.strip() for item in (run_ids or "").split(",") if item.strip()]
     if selected_ids:
         runs = [session.get(Run, item) for item in selected_ids]
@@ -1282,10 +1425,9 @@ def get_workflow_observability_trends(
     warn_logs: int | None = Query(default=None, ge=0),
     error_logs: int | None = Query(default=None, ge=0),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
 
     default_metrics = [
         "p95_node_duration_ms",
@@ -1353,10 +1495,9 @@ def get_workflow_alert_incidents(
     warn_logs: int | None = Query(default=None, ge=0),
     error_logs: int | None = Query(default=None, ge=0),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
     thresholds = _resolve_slo_thresholds(
         workflow,
         use_template=use_template,
@@ -1410,10 +1551,9 @@ def get_workflow_observability_insights(
     warn_logs: int | None = Query(default=None, ge=0),
     error_logs: int | None = Query(default=None, ge=0),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
     thresholds = _resolve_slo_thresholds(
         workflow,
         use_template=use_template,
@@ -1535,10 +1675,9 @@ def get_workflow_observability_anomalies(
     window_size: int = Query(default=30, ge=1, le=300),
     z_threshold: float = Query(default=3.0, ge=1.0, le=10.0),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    _ensure_workflow_access(session, workflow_id, current_user)
 
     default_metrics = [
         "p95_node_duration_ms",
@@ -1613,10 +1752,9 @@ def get_workflow_observability_report(
     use_template: bool = Query(default=True),
     z_threshold: float = Query(default=2.8, ge=1.0, le=10.0),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
 
     slo_view = get_workflow_slo_view(
         workflow_id=workflow_id,
@@ -1735,10 +1873,9 @@ def get_workflow_slo_view(
     warn_logs: int | None = Query(default=None, ge=0),
     error_logs: int | None = Query(default=None, ge=0),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
     rows = list(
         session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
     )[:window_size]
@@ -1802,10 +1939,9 @@ def get_workflow_slo_template(
     workflow_id: str,
     profile: str | None = Query(default=None),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
-    workflow = session.get(Workflow, workflow_id)
-    if not workflow:
-        raise HTTPException(status_code=404, detail="workflow not found")
+    workflow = _ensure_workflow_access(session, workflow_id, current_user)
     preferred_profile = profile or workflow.slo_profile
     result = resolve_slo_profile(workflow.category, workflow.tags, preferred_profile=preferred_profile)
     thresholds = {key: int(value) for key, value in result.get("thresholds", DEFAULT_THRESHOLDS).items()}
@@ -1820,7 +1956,12 @@ def get_workflow_slo_template(
 
 
 @router.get("/reports/{workflow_id}", response_model=ReportRead | None)
-def get_report(workflow_id: str, session: Session = Depends(get_session)):
+def get_report(
+    workflow_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    _ensure_workflow_access(session, workflow_id, current_user)
     row = session.get(Report, workflow_id)
     if not row:
         return None
@@ -1843,6 +1984,7 @@ async def upload_artifact(
     activate: bool = Form(default=True),
     workflow_id: str | None = Form(default=None),
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="invalid filename")
@@ -1853,6 +1995,8 @@ async def upload_artifact(
     save_path.write_bytes(content)
     sha256 = hashlib.sha256(content).hexdigest()
     lk = (logical_key or "default").strip() or "default"
+    if workflow_id is not None:
+        _ensure_workflow_access(session, workflow_id, current_user)
 
     version_query = select(UploadedArtifact).where(
         UploadedArtifact.kind == kind,
@@ -1905,6 +2049,7 @@ def list_artifacts(
     kind: str | None = Query(default=None),
     logical_key: str | None = Query(default=None),
     active_only: bool = Query(default=False),
+    current_user: AuthUser = Depends(require_request_access),
 ):
     query = select(UploadedArtifact).order_by(
         UploadedArtifact.logical_key.asc(),
@@ -1920,14 +2065,22 @@ def list_artifacts(
     if active_only:
         query = query.where(UploadedArtifact.is_active.is_(True))
     rows = list(session.exec(query))
+    if not _is_admin(current_user):
+        rows = [row for row in rows if _can_access_owner(row.workflow_id, current_user)]
     return [_artifact_to_read(row) for row in rows]
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactRead)
-def get_artifact(artifact_id: str, session: Session = Depends(get_session)):
+def get_artifact(
+    artifact_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
     row = session.get(UploadedArtifact, artifact_id)
     if not row:
         raise HTTPException(status_code=404, detail="artifact not found")
+    if not _can_access_owner(row.workflow_id, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: artifact access denied")
     return _artifact_to_read(row)
 
 
@@ -1936,10 +2089,13 @@ def rollback_artifact(
     artifact_id: str,
     payload: ArtifactRollbackRequest,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
 ):
     target = session.get(UploadedArtifact, artifact_id)
     if not target:
         raise HTTPException(status_code=404, detail="artifact not found")
+    if not _can_access_owner(target.workflow_id, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: artifact access denied")
 
     query = select(UploadedArtifact).where(
         UploadedArtifact.kind == target.kind,
@@ -1985,10 +2141,16 @@ def rollback_artifact(
 
 
 @router.get("/artifacts/{artifact_id}/download")
-def download_artifact(artifact_id: str, session: Session = Depends(get_session)):
+def download_artifact(
+    artifact_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
     row = session.get(UploadedArtifact, artifact_id)
     if not row:
         raise HTTPException(status_code=404, detail="artifact not found")
+    if not _can_access_owner(row.workflow_id, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: artifact access denied")
     path = Path(row.file_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="artifact file missing")

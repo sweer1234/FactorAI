@@ -81,6 +81,16 @@ npm run build
 
 前端默认会携带 `dev-admin-token`（可通过 `VITE_API_TOKEN` 或 localStorage `factorai_api_token` 覆盖）。
 
+## 任务重试策略（新增）
+
+`POST /api/runs/{run_id}/retry` 支持参数化重试：
+
+- `strategy`: `immediate` / `fixed_backoff`
+- `max_attempts`: 1~5
+- `backoff_sec`: 0~300
+
+当设置 `max_attempts > 1` 时，失败后会自动按策略继续尝试，直到达到上限。
+
 ## 已实现页面（MVP）
 
 1. 首页（品牌入口）

@@ -18,6 +18,7 @@ class Workflow(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=now_utc)
     last_run: datetime | None = None
     description: str | None = None
+    owner_id: str | None = Field(default=None, index=True)
     source_template_id: str | None = None
     slo_profile: str | None = Field(default=None, index=True)
     slo_overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
@@ -67,11 +68,17 @@ class Run(SQLModel, table=True):
     status: str = Field(default="queued")
     duration: str = Field(default="00m 00s")
     created_at: datetime = Field(default_factory=now_utc)
+    owner_id: str | None = Field(default=None, index=True)
     message: str = Field(default="")
     logs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     observability: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     cancel_requested: bool = Field(default=False, index=True)
     retried_from_run_id: str | None = Field(default=None, index=True)
+    retry_origin_run_id: str | None = Field(default=None, index=True)
+    retry_attempt: int = Field(default=1)
+    retry_max_attempts: int = Field(default=1)
+    retry_strategy: str = Field(default="immediate")
+    retry_backoff_sec: int = Field(default=0)
     updated_at: datetime = Field(default_factory=now_utc)
 
 

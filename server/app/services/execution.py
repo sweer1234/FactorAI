@@ -167,6 +167,53 @@ def _is_cancel_requested(run_id: str) -> bool:
         return bool(run.cancel_requested)
 
 
+def _schedule_retry_after_failure(run_id: str, workflow_id: str, *, error_code: str) -> bool:
+    if error_code == ERROR_RUN_CANCELLED:
+        return False
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            return False
+        max_attempts = max(1, int(run.retry_max_attempts or 1))
+        current_attempt = max(1, int(run.retry_attempt or 1))
+        if current_attempt >= max_attempts:
+            return False
+        next_attempt = current_attempt + 1
+        backoff_sec = max(0, int(run.retry_backoff_sec or 0))
+        strategy = str(run.retry_strategy or "immediate")
+        if strategy not in {"immediate", "fixed_backoff"}:
+            strategy = "immediate"
+        owner_id = run.owner_id
+        retry_origin = run.retry_origin_run_id or run.retried_from_run_id or run.id
+
+    _append_run_log(
+        run_id,
+        workflow_id,
+        level="WARN",
+        message=(
+            f"触发自动重试：第 {next_attempt}/{max_attempts} 次尝试，"
+            f"策略={strategy}，backoff={backoff_sec}s"
+        ),
+    )
+
+    def _spawn_retry() -> None:
+        if strategy == "fixed_backoff" and backoff_sec > 0:
+            time.sleep(backoff_sec)
+        start_run(
+            workflow_id,
+            owner_id=owner_id,
+            retried_from_run_id=run_id,
+            retry_origin_run_id=retry_origin,
+            retry_attempt=next_attempt,
+            retry_max_attempts=max_attempts,
+            retry_strategy=strategy,
+            retry_backoff_sec=backoff_sec,
+        )
+
+    executor.submit(_spawn_retry)
+    return True
+
+
 def _build_alerts(summary: dict, thresholds: dict | None = None) -> list[dict]:
     t = {**DEFAULT_ALERT_THRESHOLDS, **(thresholds or {})}
     alerts: list[dict] = []
@@ -690,14 +737,26 @@ def execute_run(run_id: str, workflow_id: str) -> None:
                     message=f"运行失败: {error_msg}",
                     error_code=error_code,
                 )
+                _schedule_retry_after_failure(run_id, workflow_id, error_code=error_code)
             _update_workflow_status(workflow_id, "draft")
 
 
-def start_run(workflow_id: str, *, retried_from_run_id: str | None = None) -> Run:
+def start_run(
+    workflow_id: str,
+    *,
+    owner_id: str | None = None,
+    retried_from_run_id: str | None = None,
+    retry_origin_run_id: str | None = None,
+    retry_attempt: int = 1,
+    retry_max_attempts: int = 1,
+    retry_strategy: str = "immediate",
+    retry_backoff_sec: int = 0,
+) -> Run:
     with Session(engine) as session:
         workflow = session.get(Workflow, workflow_id)
         if not workflow:
             raise ValueError("工作流不存在")
+        strategy = retry_strategy if retry_strategy in {"immediate", "fixed_backoff"} else "immediate"
         run = Run(
             id=f"run-{uuid.uuid4().hex[:8]}",
             workflow_id=workflow.id,
@@ -705,12 +764,18 @@ def start_run(workflow_id: str, *, retried_from_run_id: str | None = None) -> Ru
             status="queued",
             duration="00m 00s",
             created_at=datetime.utcnow(),
+            owner_id=owner_id or workflow.owner_id,
             updated_at=datetime.utcnow(),
             message="任务已进入队列，等待调度",
             logs=["[INFO] run 已创建"],
             observability={},
             cancel_requested=False,
             retried_from_run_id=retried_from_run_id,
+            retry_origin_run_id=retry_origin_run_id,
+            retry_attempt=max(1, int(retry_attempt)),
+            retry_max_attempts=max(1, min(5, int(retry_max_attempts))),
+            retry_strategy=strategy,
+            retry_backoff_sec=max(0, min(300, int(retry_backoff_sec))),
         )
         session.add(run)
         session.commit()
@@ -753,7 +818,14 @@ def cancel_run(run_id: str) -> Run | None:
     return run
 
 
-def retry_run(run_id: str) -> Run:
+def retry_run(
+    run_id: str,
+    *,
+    owner_id: str | None = None,
+    strategy: str = "immediate",
+    max_attempts: int = 1,
+    backoff_sec: int = 0,
+) -> Run:
     with Session(engine) as session:
         run = session.get(Run, run_id)
         if not run:
@@ -761,7 +833,17 @@ def retry_run(run_id: str) -> Run:
         if run.status not in {"failed", "cancelled"}:
             raise ValueError("only failed/cancelled run can retry")
         workflow_id = run.workflow_id
-    return start_run(workflow_id, retried_from_run_id=run_id)
+        origin = run.retry_origin_run_id or run.id
+    return start_run(
+        workflow_id,
+        owner_id=owner_id or run.owner_id,
+        retried_from_run_id=run_id,
+        retry_origin_run_id=origin,
+        retry_attempt=1,
+        retry_max_attempts=max(1, min(5, int(max_attempts))),
+        retry_strategy=strategy,
+        retry_backoff_sec=max(0, min(300, int(backoff_sec))),
+    )
 
 
 def list_runs(session: Session) -> list[Run]:

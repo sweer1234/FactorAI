@@ -32,6 +32,7 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/templates/{id}/versions`
 - `POST /api/templates/{id}/versions`（admin）
 - `POST /api/templates/{id}/versions/rollback`（admin）
+- `GET /api/templates/{id}/versions/diff?from_version=&to_version=`
 - `GET /api/node-library`
 - `POST /api/runs/{id}/cancel`
 - `POST /api/runs/{id}/retry`
