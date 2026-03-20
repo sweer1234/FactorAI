@@ -67,6 +67,7 @@ class TemplateRead(BaseModel):
     template_group: str
     is_subscribed: bool = False
     subscribed_count: int = 0
+    can_manage: bool = False
     graph: WorkflowGraph
 
 
@@ -77,6 +78,21 @@ class TemplatePublishRequest(BaseModel):
     category: str | None = None
     template_group: str | None = None
     official: bool = False
+
+
+class TemplateUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    category: str | None = None
+    template_group: str | None = None
+    official: bool | None = None
+
+
+class TemplateDeleteRead(BaseModel):
+    template_id: str
+    deleted_version_count: int = 0
+    deleted_subscription_count: int = 0
 
 
 class TemplateVersionRead(BaseModel):

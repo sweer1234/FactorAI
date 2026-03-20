@@ -65,8 +65,10 @@ from .schemas import (
     WorkflowRunPolicyRead,
     WorkflowRunPolicyUpdateRequest,
     RunRead,
+    TemplateDeleteRead,
     TemplateRead,
     TemplatePublishRequest,
+    TemplateUpdateRequest,
     TemplateVersionCreateRequest,
     TemplateVersionDiffRead,
     TemplateVersionRead,
@@ -257,6 +259,7 @@ def _template_to_read(
     *,
     is_subscribed: bool = False,
     subscribed_count: int = 0,
+    can_manage: bool = False,
 ) -> TemplateRead:
     return TemplateRead(
         id=row.id,
@@ -270,6 +273,7 @@ def _template_to_read(
         template_group=row.template_group,
         is_subscribed=is_subscribed,
         subscribed_count=subscribed_count,
+        can_manage=can_manage,
         graph=row.graph or {"nodes": [], "edges": []},
     )
 
@@ -1176,6 +1180,7 @@ def get_templates(
             row,
             is_subscribed=row.id in subscribed_set,
             subscribed_count=int(count_map.get(row.id, 0)),
+            can_manage=_can_manage_template(row, current_user),
         )
         for row in rows
     ]
@@ -1194,6 +1199,85 @@ def get_template(
         row,
         is_subscribed=row.id in subscribed_set,
         subscribed_count=int(count_map.get(row.id, 0)),
+        can_manage=_can_manage_template(row, current_user),
+    )
+
+
+@router.put("/templates/{template_id}", response_model=TemplateRead)
+def update_template(
+    template_id: str,
+    payload: TemplateUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    template = _ensure_template_access(session, template_id, current_user)
+    if not _can_manage_template(template, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: template manage denied")
+
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="template name cannot be empty")
+        template.name = name
+    if payload.description is not None:
+        template.description = payload.description.strip()
+    if payload.tags is not None:
+        template.tags = [str(tag).strip() for tag in payload.tags if str(tag).strip()]
+    if payload.category is not None:
+        category = payload.category.strip()
+        if not category:
+            raise HTTPException(status_code=400, detail="template category cannot be empty")
+        template.category = category
+    if payload.template_group is not None:
+        template.template_group = payload.template_group.strip()
+    if payload.official is not None:
+        if not _is_admin(current_user):
+            raise HTTPException(status_code=403, detail="forbidden: only admin can change official status")
+        template.official = bool(payload.official)
+        if template.official:
+            template.owner_id = None
+            if not template.template_group:
+                template.template_group = "官方模板"
+        else:
+            if not template.owner_id:
+                template.owner_id = current_user.user_id
+            if not template.template_group:
+                template.template_group = "我创建的模板"
+    template.updated_at = datetime.utcnow()
+    session.add(template)
+    session.commit()
+    session.refresh(template)
+    subscribed_set = _template_subscriptions_for_user(session, current_user.user_id)
+    count_map = _template_subscribed_count_map(session, [template.id])
+    return _template_to_read(
+        template,
+        is_subscribed=template.id in subscribed_set,
+        subscribed_count=int(count_map.get(template.id, 0)),
+        can_manage=_can_manage_template(template, current_user),
+    )
+
+
+@router.delete("/templates/{template_id}", response_model=TemplateDeleteRead)
+def delete_template(
+    template_id: str,
+    session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(require_request_access),
+):
+    template = _ensure_template_access(session, template_id, current_user)
+    if not _can_manage_template(template, current_user):
+        raise HTTPException(status_code=403, detail="forbidden: template manage denied")
+    versions = list(session.exec(select(TemplateVersion).where(TemplateVersion.template_id == template_id)))
+    subscriptions = list(session.exec(select(TemplateSubscription).where(TemplateSubscription.template_id == template_id)))
+    for row in versions:
+        session.delete(row)
+    for row in subscriptions:
+        session.delete(row)
+    session.delete(template)
+    session.commit()
+    return TemplateDeleteRead(
+        template_id=template_id,
+        deleted_version_count=len(versions),
+        deleted_subscription_count=len(subscriptions),
     )
 
 
@@ -1221,7 +1305,12 @@ def subscribe_template(
         )
         session.commit()
     count_map = _template_subscribed_count_map(session, [template_id])
-    return _template_to_read(template, is_subscribed=True, subscribed_count=int(count_map.get(template_id, 0)))
+    return _template_to_read(
+        template,
+        is_subscribed=True,
+        subscribed_count=int(count_map.get(template_id, 0)),
+        can_manage=_can_manage_template(template, current_user),
+    )
 
 
 @router.delete("/templates/{template_id}/subscribe", response_model=TemplateRead)
@@ -1244,7 +1333,12 @@ def unsubscribe_template(
     if rows:
         session.commit()
     count_map = _template_subscribed_count_map(session, [template_id])
-    return _template_to_read(template, is_subscribed=False, subscribed_count=int(count_map.get(template_id, 0)))
+    return _template_to_read(
+        template,
+        is_subscribed=False,
+        subscribed_count=int(count_map.get(template_id, 0)),
+        can_manage=_can_manage_template(template, current_user),
+    )
 
 
 @router.post("/workflows/{workflow_id}/publish-template", response_model=TemplateRead)
@@ -1282,7 +1376,7 @@ def publish_workflow_as_template(
     )
     session.commit()
     session.refresh(template)
-    return _template_to_read(template)
+    return _template_to_read(template, can_manage=True)
 
 
 @router.get("/templates/{template_id}/versions", response_model=list[TemplateVersionRead])
@@ -1376,7 +1470,7 @@ def rollback_template_version(
     session.refresh(template)
     session.refresh(created)
     return TemplateVersionRollbackRead(
-        template=_template_to_read(template),
+        template=_template_to_read(template, can_manage=_can_manage_template(template, current_user)),
         restored_version=_template_version_to_read(target),
         created_version=_template_version_to_read(created),
     )

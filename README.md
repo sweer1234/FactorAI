@@ -100,6 +100,8 @@ npm run build
 ## 模板发布与版本差异导出（新增）
 
 - `POST /api/workflows/{workflow_id}/publish-template`
+- `PUT /api/templates/{template_id}`（模板拥有者或 admin）
+- `DELETE /api/templates/{template_id}`（模板拥有者或 admin）
 - `POST /api/templates/{template_id}/subscribe`
 - `DELETE /api/templates/{template_id}/subscribe`
 - `GET /api/templates/{template_id}/versions/diff`

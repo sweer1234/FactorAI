@@ -6,6 +6,7 @@ import {
   applyWorkflowContractFixes,
   cloneTemplate as apiCloneTemplate,
   createWorkflow as apiCreateWorkflow,
+  deleteTemplate as apiDeleteTemplate,
   fetchArtifacts,
   fetchBootstrap,
   fetchReport,
@@ -24,6 +25,7 @@ import {
   saveWorkflowGraph as apiSaveWorkflowGraph,
   subscribeTemplate as apiSubscribeTemplate,
   unsubscribeTemplate as apiUnsubscribeTemplate,
+  updateTemplate as apiUpdateTemplate,
   uploadArtifact,
 } from '../api/client'
 import {
@@ -73,6 +75,11 @@ export interface WorkspaceStore {
   cloneTemplate: (templateId: string) => Promise<string | null>
   publishTemplate: (workflowId: string) => Promise<string | null>
   toggleTemplateSubscription: (templateId: string, subscribe: boolean) => Promise<void>
+  updateTemplateMeta: (
+    templateId: string,
+    payload: { name?: string; description?: string; tags?: string[]; category?: string; templateGroup?: string },
+  ) => Promise<void>
+  deleteTemplateById: (templateId: string) => Promise<void>
   saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => Promise<void>
   saveWorkflowDraft: (workflowId: string) => Promise<void>
   runWorkflow: (workflowId: string) => Promise<void>
@@ -247,6 +254,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     updateNotice(subscribe ? '已订阅模板' : '已取消订阅')
   }
 
+  const updateTemplateMeta: WorkspaceStore['updateTemplateMeta'] = async (templateId, payload) => {
+    if (!backendOnline) return
+    const updated = await apiUpdateTemplate(templateId, payload)
+    setTemplates((prev) => prev.map((item) => (item.id === templateId ? { ...item, ...updated } : item)))
+    updateNotice(`模板已更新：${updated.name}`)
+  }
+
+  const deleteTemplateById: WorkspaceStore['deleteTemplateById'] = async (templateId) => {
+    if (!backendOnline) return
+    const result = await apiDeleteTemplate(templateId)
+    setTemplates((prev) => prev.filter((item) => item.id !== templateId))
+    updateNotice(`模板已删除：版本 ${result.deletedVersionCount}，订阅 ${result.deletedSubscriptionCount}`)
+  }
+
   const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = async (workflowId, graph) => {
     setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? { ...item, graph } : item)))
     if (!backendOnline) return
@@ -406,6 +427,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     cloneTemplate,
     publishTemplate,
     toggleTemplateSubscription,
+    updateTemplateMeta,
+    deleteTemplateById,
     saveWorkflowGraph,
     saveWorkflowDraft,
     runWorkflow,

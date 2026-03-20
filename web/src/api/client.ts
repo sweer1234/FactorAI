@@ -75,6 +75,7 @@ interface ApiTemplate {
   template_group?: string
   is_subscribed?: boolean
   subscribed_count?: number
+  can_manage?: boolean
   graph: WorkflowGraph
 }
 
@@ -103,6 +104,12 @@ interface ApiTemplateVersionDiff {
   changed_nodes: string[]
   added_edges: string[]
   removed_edges: string[]
+}
+
+interface ApiTemplateDelete {
+  template_id: string
+  deleted_version_count: number
+  deleted_subscription_count: number
 }
 
 interface ApiRunBatchActionItem {
@@ -405,6 +412,7 @@ function toTemplate(item: ApiTemplate): Template {
     templateGroup: item.template_group ?? '官方模板',
     isSubscribed: item.is_subscribed ?? false,
     subscribedCount: Number(item.subscribed_count ?? 0),
+    canManage: item.can_manage ?? false,
     graph: item.graph ?? { nodes: [], edges: [] },
   }
 }
@@ -830,6 +838,42 @@ export async function subscribeTemplate(templateId: string) {
     method: 'POST',
   })
   return toTemplate(data)
+}
+
+export async function updateTemplate(
+  templateId: string,
+  payload: {
+    name?: string
+    description?: string
+    tags?: string[]
+    category?: string
+    templateGroup?: string
+    official?: boolean
+  },
+) {
+  const data = await request<ApiTemplate>(`/templates/${templateId}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: payload.name ?? null,
+      description: payload.description ?? null,
+      tags: payload.tags ?? null,
+      category: payload.category ?? null,
+      template_group: payload.templateGroup ?? null,
+      official: typeof payload.official === 'boolean' ? payload.official : null,
+    }),
+  })
+  return toTemplate(data)
+}
+
+export async function deleteTemplate(templateId: string) {
+  const data = await request<ApiTemplateDelete>(`/templates/${templateId}`, {
+    method: 'DELETE',
+  })
+  return {
+    templateId: data.template_id,
+    deletedVersionCount: Number(data.deleted_version_count ?? 0),
+    deletedSubscriptionCount: Number(data.deleted_subscription_count ?? 0),
+  }
 }
 
 export async function unsubscribeTemplate(templateId: string) {

@@ -6,7 +6,7 @@ import type { TemplateVersion, TemplateVersionDiff } from '../types'
 
 export function TemplatesPage() {
   const navigate = useNavigate()
-  const { templates, cloneTemplate, toggleTemplateSubscription } = useWorkspace()
+  const { templates, cloneTemplate, toggleTemplateSubscription, updateTemplateMeta, deleteTemplateById } = useWorkspace()
   const [keyword, setKeyword] = useState('')
   const [menu, setMenu] = useState<'official' | 'subscribed' | 'created'>('official')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
@@ -23,7 +23,7 @@ export function TemplatesPage() {
     return templates.filter((item) => {
       if (menu === 'official' && item.official === false) return false
       if (menu === 'subscribed' && item.isSubscribed !== true) return false
-      if (menu === 'created' && !item.ownerId) return false
+      if (menu === 'created' && !(item.canManage === true && item.official !== true)) return false
       if (!key) return true
       return (
         item.name.toLowerCase().includes(key) ||
@@ -86,6 +86,42 @@ export function TemplatesPage() {
     URL.revokeObjectURL(url)
   }
 
+  const onEditTemplate = async (templateId: string) => {
+    const current = templates.find((item) => item.id === templateId)
+    if (!current) return
+    const nextName = window.prompt('模板名称', current.name)
+    if (nextName == null) return
+    const nextDescription = window.prompt('模板描述', current.description)
+    if (nextDescription == null) return
+    const nextCategory = window.prompt('模板分类', current.category)
+    if (nextCategory == null) return
+    const nextGroup = window.prompt('模板分组', current.templateGroup ?? '')
+    if (nextGroup == null) return
+    const nextTagsRaw = window.prompt('模板标签（逗号分隔）', (current.tags ?? []).join(','))
+    if (nextTagsRaw == null) return
+    await updateTemplateMeta(templateId, {
+      name: nextName,
+      description: nextDescription,
+      category: nextCategory,
+      templateGroup: nextGroup,
+      tags: nextTagsRaw
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    })
+  }
+
+  const onDeleteTemplate = async (templateId: string) => {
+    const confirmed = window.confirm('确认删除该模板？将同时删除版本历史与订阅记录。')
+    if (!confirmed) return
+    await deleteTemplateById(templateId)
+    if (selectedTemplateId === templateId) {
+      setSelectedTemplateId(null)
+      setVersionRows([])
+      setVersionDiff(null)
+    }
+  }
+
   return (
     <section className="template-workspace panel">
       <aside className="template-menu">
@@ -128,6 +164,7 @@ export function TemplatesPage() {
             <tr>
               <th>名称</th>
               <th>分类</th>
+              <th>订阅数</th>
               <th>标签</th>
               <th>最近更新时间</th>
               <th>操作</th>
@@ -138,6 +175,9 @@ export function TemplatesPage() {
               <tr key={item.id}>
                 <td>{item.name}</td>
                 <td>{item.category}</td>
+                <td>
+                  <span className="tag">{item.subscribedCount ?? 0}</span>
+                </td>
                 <td>
                   <div className="tag-group">
                     {(item.tags ?? []).map((tag) => (
@@ -171,6 +211,16 @@ export function TemplatesPage() {
                     <button type="button" className="button-link ghost" onClick={() => void loadTemplateVersions(item.id)}>
                       版本
                     </button>
+                    {item.canManage ? (
+                      <button type="button" className="button-link ghost" onClick={() => void onEditTemplate(item.id)}>
+                        编辑
+                      </button>
+                    ) : null}
+                    {item.canManage ? (
+                      <button type="button" className="button-link ghost" onClick={() => void onDeleteTemplate(item.id)}>
+                        删除
+                      </button>
+                    ) : null}
                   </div>
                 </td>
               </tr>

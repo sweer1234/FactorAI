@@ -34,6 +34,7 @@ export interface Template {
   templateGroup?: string
   isSubscribed?: boolean
   subscribedCount?: number
+  canManage?: boolean
   graph: WorkflowGraph
 }
 
