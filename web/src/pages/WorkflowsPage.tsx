@@ -12,7 +12,7 @@ const statusLabel = {
 export function WorkflowsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { workflows, createWorkflow, runWorkflow } = useWorkspace()
+  const { workflows, createWorkflow, runWorkflow, publishTemplate } = useWorkspace()
   const [keyword, setKeyword] = useState('')
   const [form, setForm] = useState({
     name: '',
@@ -49,10 +49,10 @@ export function WorkflowsPage() {
     setSearchParams({})
   }
 
-  const submitCreate = () => {
+  const submitCreate = async () => {
     const name = form.name.trim()
     if (!name) return
-    const id = createWorkflow({
+    const id = await createWorkflow({
       name,
       category: form.category.trim() || '未分类',
       tags: form.tags
@@ -69,9 +69,15 @@ export function WorkflowsPage() {
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
-  const runNow = (workflow: Workflow) => {
-    runWorkflow(workflow.id)
+  const runNow = async (workflow: Workflow) => {
+    await runWorkflow(workflow.id)
     navigate('/runs')
+  }
+
+  const publishNow = async (workflow: Workflow) => {
+    const templateId = await publishTemplate(workflow.id)
+    if (!templateId) return
+    navigate('/templates')
   }
 
   return (
@@ -125,12 +131,15 @@ export function WorkflowsPage() {
                     <Link className="button-link" to={`/editor/${item.id}`}>
                       编辑
                     </Link>
-                    <button type="button" className="button-link ghost" onClick={() => runNow(item)}>
+                    <button type="button" className="button-link ghost" onClick={() => void runNow(item)}>
                       运行
                     </button>
                     <Link className="button-link ghost" to={`/reports/${item.id}`}>
                       报告
                     </Link>
+                    <button type="button" className="button-link ghost" onClick={() => void publishNow(item)}>
+                      发布模板
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -169,7 +178,7 @@ export function WorkflowsPage() {
               <button type="button" className="primary ghost" onClick={closeCreate}>
                 取消
               </button>
-              <button type="button" className="primary" onClick={submitCreate}>
+              <button type="button" className="primary" onClick={() => void submitCreate()}>
                 创建并进入编辑器
               </button>
             </div>

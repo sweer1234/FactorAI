@@ -1,14 +1,349 @@
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import {
+  fetchWorkflowAnomalies,
+  fetchWorkflowInsightsReport,
+  fetchWorkflowInsights,
+  fetchWorkflowAlerts,
+  fetchWorkflowRunPolicy,
+  fetchWorkflowRunCompare,
+  fetchWorkflowSloTemplate,
+  fetchWorkflowSloView,
+  fetchWorkflowTrends,
+  updateWorkflowSloConfig,
+  updateWorkflowRunPolicy,
+} from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
+import type {
+  RunCompare,
+  SloTemplate,
+  SloView,
+  WorkflowAlerts,
+  WorkflowAnomalies,
+  WorkflowInsights,
+  WorkflowTrends,
+} from '../types'
+
+const TREND_DEFINITIONS = [
+  { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
+  { key: 'failed_nodes', label: '失败节点数', color: '#ff8a96' },
+  { key: 'warn_logs', label: 'WARN 日志数', color: '#ffc06f' },
+] as const
+const TREND_LABELS: Record<string, string> = {
+  p95_node_duration_ms: 'P95 节点耗时',
+  failed_nodes: '失败节点数',
+  warn_logs: 'WARN 日志数',
+  error_logs: 'ERROR 日志数',
+  total_duration_ms: '总耗时',
+}
+
+const SLO_PROFILE_OPTIONS = ['auto', 'default', 'ml_relaxed', 'competition', 'backtest_strict', 'offline_teaching']
+
+function pct(value: number) {
+  return `${(value * 100).toFixed(1)}%`
+}
 
 export function ReportsPage() {
   const { workflowId = '' } = useParams()
-  const { workflows, getReportByWorkflowId, runWorkflow } = useWorkspace()
+  const { workflows, runs, backendOnline, getReportByWorkflowId, runWorkflow } = useWorkspace()
   const workflow = workflows.find((item) => item.id === workflowId)
   const report = workflow ? getReportByWorkflowId(workflow.id) : undefined
   const equitySeries = report?.equitySeries ?? []
   const metrics = report?.metrics ?? []
   const layerReturn = report?.layerReturn ?? []
+  const [runCompare, setRunCompare] = useState<RunCompare | null>(null)
+  const [sloView, setSloView] = useState<SloView | null>(null)
+  const [sloTemplate, setSloTemplate] = useState<SloTemplate | null>(null)
+  const [workflowTrends, setWorkflowTrends] = useState<WorkflowTrends | null>(null)
+  const [workflowAlerts, setWorkflowAlerts] = useState<WorkflowAlerts | null>(null)
+  const [workflowInsights, setWorkflowInsights] = useState<WorkflowInsights | null>(null)
+  const [workflowAnomalies, setWorkflowAnomalies] = useState<WorkflowAnomalies | null>(null)
+  const [selectedTrendMetric, setSelectedTrendMetric] = useState('p95_node_duration_ms')
+  const [sloProfile, setSloProfile] = useState('auto')
+  const [sloThresholds, setSloThresholds] = useState({
+    p95_node_duration_ms: 800,
+    failed_nodes: 0,
+    warn_logs: 20,
+    error_logs: 0,
+  })
+  const [savingSlo, setSavingSlo] = useState(false)
+  const [savingRunPolicy, setSavingRunPolicy] = useState(false)
+  const [applyingSuggestedSlo, setApplyingSuggestedSlo] = useState(false)
+  const [exportingInsights, setExportingInsights] = useState(false)
+  const [runPolicy, setRunPolicy] = useState<{
+    strategy: 'immediate' | 'fixed_backoff'
+    maxAttempts: number
+    backoffSec: number
+  }>({
+    strategy: 'immediate',
+    maxAttempts: 1,
+    backoffSec: 0,
+  })
+
+  const workflowRuns = useMemo(
+    () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
+    [runs, workflowId],
+  )
+
+  useEffect(() => {
+    if (!backendOnline || !workflow?.id) return
+    const runIds = workflowRuns.map((item) => item.id)
+    const load = async () => {
+      try {
+        const [compare, slo, template, trends, alerts, insights, anomalies, policy] = await Promise.all([
+          fetchWorkflowRunCompare(workflow.id, runIds),
+          fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
+          fetchWorkflowSloTemplate(workflow.id),
+          fetchWorkflowTrends(workflow.id, {
+            metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+            windowSize: 30,
+            useTemplate: true,
+          }),
+          fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
+          fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true }),
+          fetchWorkflowAnomalies(workflow.id, {
+            metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+            windowSize: 30,
+            zThreshold: 2.8,
+          }),
+          fetchWorkflowRunPolicy(workflow.id),
+        ])
+        setRunCompare(compare)
+        setSloView(slo)
+        setSloTemplate(template)
+        setWorkflowTrends(trends)
+        setWorkflowAlerts(alerts)
+        setWorkflowInsights(insights)
+        setWorkflowAnomalies(anomalies)
+        setRunPolicy({
+          strategy: policy.strategy,
+          maxAttempts: policy.maxAttempts,
+          backoffSec: policy.backoffSec,
+        })
+        setSloProfile(template.profile || 'auto')
+        setSloThresholds({
+          p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
+          failed_nodes: Number(template.thresholds.failed_nodes ?? 0),
+          warn_logs: Number(template.thresholds.warn_logs ?? 20),
+          error_logs: Number(template.thresholds.error_logs ?? 0),
+        })
+      } catch {
+        setRunCompare(null)
+        setSloView(null)
+        setSloTemplate(null)
+        setWorkflowTrends(null)
+        setWorkflowAlerts(null)
+        setWorkflowInsights(null)
+        setWorkflowAnomalies(null)
+        setRunPolicy({
+          strategy: 'immediate',
+          maxAttempts: 1,
+          backoffSec: 0,
+        })
+      }
+    }
+    void load()
+  }, [backendOnline, workflow?.id, workflowRuns])
+
+  const saveSloConfig = async () => {
+    if (!workflow?.id) return
+    setSavingSlo(true)
+    try {
+      const template = await updateWorkflowSloConfig(workflow.id, {
+        profile: sloProfile === 'auto' ? null : sloProfile,
+        overrides: {
+          p95_node_duration_ms: Number(sloThresholds.p95_node_duration_ms),
+          failed_nodes: Number(sloThresholds.failed_nodes),
+          warn_logs: Number(sloThresholds.warn_logs),
+          error_logs: Number(sloThresholds.error_logs),
+        },
+      })
+      setSloTemplate(template)
+      const slo = await fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true })
+      setSloView(slo)
+      const trends = await fetchWorkflowTrends(workflow.id, {
+        metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+        windowSize: 30,
+        useTemplate: true,
+      })
+      setWorkflowTrends(trends)
+      const alerts = await fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true })
+      setWorkflowAlerts(alerts)
+      const insights = await fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true })
+      setWorkflowInsights(insights)
+      const anomalies = await fetchWorkflowAnomalies(workflow.id, {
+        metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+        windowSize: 30,
+        zThreshold: 2.8,
+      })
+      setWorkflowAnomalies(anomalies)
+    } finally {
+      setSavingSlo(false)
+    }
+  }
+
+  const saveRunPolicy = async () => {
+    if (!workflow?.id) return
+    setSavingRunPolicy(true)
+    try {
+      const policy = await updateWorkflowRunPolicy(workflow.id, {
+        strategy: runPolicy.strategy,
+        maxAttempts: Number(runPolicy.maxAttempts),
+        backoffSec: Number(runPolicy.backoffSec),
+      })
+      setRunPolicy({
+        strategy: policy.strategy,
+        maxAttempts: policy.maxAttempts,
+        backoffSec: policy.backoffSec,
+      })
+    } finally {
+      setSavingRunPolicy(false)
+    }
+  }
+
+  const applySuggestedSloConfig = async () => {
+    if (!workflow?.id || !workflowInsights) return
+    const suggested = workflowInsights.suggestedSloConfig
+    if (!suggested || Object.keys(suggested.overrides ?? {}).length === 0) return
+    setApplyingSuggestedSlo(true)
+    try {
+      const profileFromSuggestion = suggested.profile ?? null
+      const template = await updateWorkflowSloConfig(workflow.id, {
+        profile: profileFromSuggestion,
+        overrides: suggested.overrides,
+      })
+      setSloTemplate(template)
+      setSloProfile(template.profile || 'auto')
+      setSloThresholds({
+        p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
+        failed_nodes: Number(template.thresholds.failed_nodes ?? 0),
+        warn_logs: Number(template.thresholds.warn_logs ?? 20),
+        error_logs: Number(template.thresholds.error_logs ?? 0),
+      })
+      const [slo, trends, alerts, insights, anomalies] = await Promise.all([
+        fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
+        fetchWorkflowTrends(workflow.id, {
+          metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+          windowSize: 30,
+          useTemplate: true,
+        }),
+        fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
+        fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true }),
+        fetchWorkflowAnomalies(workflow.id, {
+          metrics: ['p95_node_duration_ms', 'failed_nodes', 'warn_logs', 'error_logs', 'total_duration_ms'],
+          windowSize: 30,
+          zThreshold: 2.8,
+        }),
+      ])
+      setSloView(slo)
+      setWorkflowTrends(trends)
+      setWorkflowAlerts(alerts)
+      setWorkflowInsights(insights)
+      setWorkflowAnomalies(anomalies)
+    } finally {
+      setApplyingSuggestedSlo(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!workflowTrends?.metrics?.length) return
+    if (!workflowTrends.metrics.includes(selectedTrendMetric)) {
+      setSelectedTrendMetric(workflowTrends.metrics[0])
+    }
+  }, [workflowTrends, selectedTrendMetric])
+
+  const selectedTrend = useMemo(() => {
+    if (!workflowTrends) return null
+    const rows = workflowTrends.points[selectedTrendMetric] ?? []
+    if (rows.length === 0) return null
+    const values = rows.map((item) => Number(item.value ?? 0))
+    const threshold = Number(rows[0]?.threshold ?? workflowTrends.thresholds[selectedTrendMetric] ?? 0)
+    const max = Math.max(...values, threshold, 1)
+    const min = Math.min(...values, 0)
+    const points = rows
+      .map((item, idx) => {
+        const x = rows.length <= 1 ? 50 : (idx / (rows.length - 1)) * 100
+        const y = 90 - ((Number(item.value ?? 0) - min) / (max - min || 1)) * 74
+        return `${x},${y}`
+      })
+      .join(' ')
+    const thresholdY = 90 - ((threshold - min) / (max - min || 1)) * 74
+    return {
+      rows,
+      points,
+      threshold,
+      thresholdY,
+      latest: Number(rows[rows.length - 1]?.value ?? 0),
+    }
+  }, [workflowTrends, selectedTrendMetric])
+
+  const exportTrendCsv = () => {
+    if (!selectedTrend) return
+    const lines = [
+      'run_id,created_at,status,value,threshold',
+      ...selectedTrend.rows.map(
+        (item) =>
+          `${item.runId},${item.createdAt},${item.status},${Number(item.value ?? 0)},${Number(item.threshold ?? selectedTrend.threshold)}`,
+      ),
+    ]
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${workflow?.id ?? 'workflow'}-${selectedTrendMetric}-trend.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportInsightsMarkdown = async () => {
+    if (!workflow?.id) return
+    setExportingInsights(true)
+    try {
+      const report = await fetchWorkflowInsightsReport(workflow.id, {
+        windowSize: 30,
+        useTemplate: true,
+        zThreshold: 2.8,
+      })
+      const blob = new Blob([report.markdown], { type: 'text/markdown;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${workflow.id}-observability-insights.md`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setExportingInsights(false)
+    }
+  }
+
+  const metricTrendCards = useMemo(() => {
+    if (!runCompare || runCompare.runIds.length === 0) return []
+    return TREND_DEFINITIONS.map((def) => {
+      const values = runCompare.runIds.map((runId) => {
+        const raw = runCompare.metrics[runId]?.[def.key]
+        const num = Number(raw ?? 0)
+        return Number.isFinite(num) ? num : 0
+      })
+      const threshold = Number((sloView?.thresholds as Record<string, number> | undefined)?.[def.key] ?? 0)
+      const max = Math.max(...values, threshold, 1)
+      const min = Math.min(...values, 0)
+      const points = values
+        .map((value, idx) => {
+          const x = runCompare.runIds.length <= 1 ? 50 : (idx / (runCompare.runIds.length - 1)) * 100
+          const y = 90 - ((value - min) / (max - min || 1)) * 70
+          return `${x},${y}`
+        })
+        .join(' ')
+      const thresholdY = 90 - ((threshold - min) / (max - min || 1)) * 70
+      return {
+        ...def,
+        points,
+        latest: values[values.length - 1] ?? 0,
+        threshold,
+        thresholdY,
+      }
+    })
+  }, [runCompare, sloView?.thresholds])
 
   let equityPoints = ''
   if (equitySeries.length > 0) {
@@ -41,7 +376,7 @@ export function ReportsPage() {
         <h3>暂无研究报告</h3>
         <p>先运行一次工作流，系统将自动生成因子表现报告。</p>
         <div className="header-actions">
-          <button type="button" className="primary" onClick={() => runWorkflow(workflow.id)}>
+          <button type="button" className="primary" onClick={() => void runWorkflow(workflow.id)}>
             立即运行
           </button>
           <Link to={`/editor/${workflow.id}`} className="primary ghost">
@@ -97,6 +432,403 @@ export function ReportsPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>SLO 视图（最近 20 次）</h3>
+          <div className="header-actions">
+            <span className="tag">{sloView ? pct(sloView.passRate) : '--'}</span>
+            <span className="tag">{sloTemplate ? `模板: ${sloTemplate.profile}` : '模板: --'}</span>
+          </div>
+        </div>
+        {sloView ? (
+          <>
+            <div className="slo-kpis">
+              <article>
+                <span>通过次数</span>
+                <strong>{sloView.passCount}</strong>
+              </article>
+              <article>
+                <span>失败次数</span>
+                <strong>{sloView.failCount}</strong>
+              </article>
+              <article>
+                <span>阈值 P95</span>
+                <strong>{sloView.thresholds.p95_node_duration_ms}ms</strong>
+              </article>
+            </div>
+            {sloTemplate ? (
+              <p className="muted">按「{sloTemplate.workflowCategory}」自动匹配模板（{sloTemplate.reason}）。</p>
+            ) : null}
+            <div className="slo-config-grid">
+              <label>
+                Profile
+                <select value={sloProfile} onChange={(event) => setSloProfile(event.target.value)}>
+                  {SLO_PROFILE_OPTIONS.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                P95 阈值(ms)
+                <input
+                  className="search-input"
+                  type="number"
+                  min={1}
+                  value={String(sloThresholds.p95_node_duration_ms)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, p95_node_duration_ms: Number(event.target.value || 1) }))
+                  }
+                />
+              </label>
+              <label>
+                失败节点阈值
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  value={String(sloThresholds.failed_nodes)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, failed_nodes: Number(event.target.value || 0) }))
+                  }
+                />
+              </label>
+              <label>
+                WARN 阈值
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  value={String(sloThresholds.warn_logs)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, warn_logs: Number(event.target.value || 0) }))
+                  }
+                />
+              </label>
+              <label>
+                ERROR 阈值
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  value={String(sloThresholds.error_logs)}
+                  onChange={(event) =>
+                    setSloThresholds((prev) => ({ ...prev, error_logs: Number(event.target.value || 0) }))
+                  }
+                />
+              </label>
+              <div className="header-actions">
+                <button type="button" className="primary ghost" disabled={savingSlo} onClick={() => void saveSloConfig()}>
+                  {savingSlo ? '保存中…' : '保存 SLO 配置'}
+                </button>
+              </div>
+            </div>
+            <div className="slo-config-grid" style={{ marginTop: 8 }}>
+              <label>
+                重试策略
+                <select
+                  value={runPolicy.strategy}
+                  onChange={(event) =>
+                    setRunPolicy((prev) => ({
+                      ...prev,
+                      strategy: event.target.value as 'immediate' | 'fixed_backoff',
+                    }))
+                  }
+                >
+                  <option value="immediate">immediate</option>
+                  <option value="fixed_backoff">fixed_backoff</option>
+                </select>
+              </label>
+              <label>
+                最大尝试次数
+                <input
+                  className="search-input"
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={String(runPolicy.maxAttempts)}
+                  onChange={(event) =>
+                    setRunPolicy((prev) => ({ ...prev, maxAttempts: Math.max(1, Math.min(5, Number(event.target.value || 1))) }))
+                  }
+                />
+              </label>
+              <label>
+                固定退避秒数
+                <input
+                  className="search-input"
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={String(runPolicy.backoffSec)}
+                  onChange={(event) =>
+                    setRunPolicy((prev) => ({ ...prev, backoffSec: Math.max(0, Math.min(300, Number(event.target.value || 0))) }))
+                  }
+                />
+              </label>
+              <div className="header-actions">
+                <button type="button" className="primary ghost" disabled={savingRunPolicy} onClick={() => void saveRunPolicy()}>
+                  {savingRunPolicy ? '保存中…' : '保存运行重试策略'}
+                </button>
+              </div>
+            </div>
+            <div className="slo-runs">
+              {sloView.runs.slice(-8).map((item) => (
+                <div key={String(item.run_id)} className={`slo-run ${item.slo_pass ? 'pass' : 'fail'}`}>
+                  <span>{String(item.run_id).slice(-6)}</span>
+                  <em>{item.slo_pass ? 'PASS' : 'FAIL'}</em>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无 SLO 数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>时间序列趋势（按 Run）</h3>
+          <div className="header-actions">
+            <select value={selectedTrendMetric} onChange={(event) => setSelectedTrendMetric(event.target.value)}>
+              {(workflowTrends?.metrics ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {TREND_LABELS[item] ?? item}
+                </option>
+              ))}
+            </select>
+            <button type="button" className="primary ghost mini" onClick={exportTrendCsv} disabled={!selectedTrend}>
+              导出 CSV
+            </button>
+          </div>
+        </div>
+        {selectedTrend ? (
+          <>
+            <div className="trend-legend">
+              <strong>{TREND_LABELS[selectedTrendMetric] ?? selectedTrendMetric}</strong>
+              <em>
+                当前 {selectedTrend.latest.toFixed(0)} / 阈值 {selectedTrend.threshold.toFixed(0)}
+              </em>
+            </div>
+            <svg viewBox="0 0 100 100" className="line-chart trend-time-chart" role="img" aria-label="selected metric trend">
+              <line
+                x1="0"
+                y1={String(selectedTrend.thresholdY)}
+                x2="100"
+                y2={String(selectedTrend.thresholdY)}
+                className="threshold-line"
+              />
+              <polyline points={selectedTrend.points} />
+            </svg>
+            <div className="trend-metric-grid">
+              {metricTrendCards.map((item) => (
+                <article key={item.key} className="trend-metric-card">
+                  <header>
+                    <strong>{item.label}</strong>
+                    <span>
+                      当前 {item.latest.toFixed(0)} / 阈值 {item.threshold.toFixed(0)}
+                    </span>
+                  </header>
+                  <svg viewBox="0 0 100 100" role="img" aria-label={`${item.label} trend`}>
+                    <line
+                      x1="0"
+                      y1={String(item.thresholdY)}
+                      x2="100"
+                      y2={String(item.thresholdY)}
+                      className="threshold-line"
+                    />
+                    <polyline points={item.points} style={{ stroke: item.color }} />
+                  </svg>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无时间序列趋势数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>多 Run 对比（最近 8 次）</h3>
+          <span className="tag">{runCompare?.runIds.length ?? 0}</span>
+        </div>
+        {runCompare ? (
+          <div className="compare-table">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>状态</th>
+                  <th>P95(ms)</th>
+                  <th>失败节点</th>
+                  <th>WARN</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runCompare.runIds.map((runId) => {
+                  const item = runCompare.metrics[runId] ?? {}
+                  return (
+                    <tr key={runId}>
+                      <td>{runId.slice(-8)}</td>
+                      <td>{String(item.status ?? '--')}</td>
+                      <td>{String(item.p95_node_duration_ms ?? '--')}</td>
+                      <td>{String(item.failed_nodes ?? '--')}</td>
+                      <td>{String(item.warn_logs ?? '--')}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted">暂无对比数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>告警事件时间线</h3>
+          <span className="tag">
+            {workflowAlerts ? `${workflowAlerts.alertRuns}/${workflowAlerts.totalRuns}` : '--'}
+          </span>
+        </div>
+        {workflowAlerts ? (
+          <>
+            <div className="alert-count-grid">
+              {Object.entries(workflowAlerts.counts).map(([code, count]) => (
+                <article key={code}>
+                  <span>{code}</span>
+                  <strong>{count}</strong>
+                </article>
+              ))}
+            </div>
+            <div className="alert-incident-list">
+              {workflowAlerts.incidents.slice(0, 8).map((incident) => (
+                <article key={incident.runId} className="alert-incident">
+                  <header>
+                    <strong>{incident.runId.slice(-8)}</strong>
+                    <span>{incident.status}</span>
+                  </header>
+                  <ul>
+                    {incident.alerts.map((item, idx) => (
+                      <li key={`${incident.runId}-${idx}`}>
+                        {String(item.code ?? 'ALERT')} · {String(item.message ?? '')}
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+              {workflowAlerts.incidents.length === 0 ? <p className="muted">最近窗口无告警事件</p> : null}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无告警时间线数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>异常检测（鲁棒 Z-Score）</h3>
+          <span className="tag">{workflowAnomalies ? workflowAnomalies.anomalyCount : '--'}</span>
+        </div>
+        {workflowAnomalies ? (
+          <>
+            <div className="alert-count-grid">
+              {Object.entries(workflowAnomalies.anomalyByMetric).map(([metric, count]) => (
+                <article key={metric}>
+                  <span>{TREND_LABELS[metric] ?? metric}</span>
+                  <strong>{count}</strong>
+                </article>
+              ))}
+            </div>
+            {workflowAnomalies.anomalies.length > 0 ? (
+              <div className="compare-table">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Run</th>
+                      <th>指标</th>
+                      <th>值/基线</th>
+                      <th>Z</th>
+                      <th>等级</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workflowAnomalies.anomalies.slice(0, 12).map((item) => (
+                      <tr key={`${item.runId}-${item.metricName}-${item.createdAt}`}>
+                        <td>{item.runId.slice(-8)}</td>
+                        <td>{TREND_LABELS[item.metricName] ?? item.metricName}</td>
+                        <td>
+                          {item.value.toFixed(1)} / {item.baseline.toFixed(1)}
+                        </td>
+                        <td>{item.zScore.toFixed(2)}</td>
+                        <td>{item.level}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">当前窗口未检测到异常点</p>
+            )}
+          </>
+        ) : (
+          <p className="muted">暂无异常检测数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>自动洞察建议</h3>
+          <span className={`tag health ${workflowInsights?.healthLevel ?? 'unknown'}`}>
+            {workflowInsights ? `评分 ${workflowInsights.healthScore}` : '--'}
+          </span>
+        </div>
+        {workflowInsights ? (
+          <>
+            <p className="muted">
+              通过率 {pct(workflowInsights.passRate)} · 告警运行 {workflowInsights.alertRuns}/{workflowInsights.totalRuns}
+            </p>
+            <div className="header-actions">
+              <button
+                type="button"
+                className="primary ghost mini"
+                disabled={exportingInsights}
+                onClick={() => void exportInsightsMarkdown()}
+              >
+                {exportingInsights ? '导出中…' : '导出洞察 MD'}
+              </button>
+              <button
+                type="button"
+                className="primary ghost mini"
+                disabled={
+                  applyingSuggestedSlo ||
+                  Object.keys(workflowInsights.suggestedSloConfig.overrides ?? {}).length === 0
+                }
+                onClick={() => void applySuggestedSloConfig()}
+              >
+                {applyingSuggestedSlo ? '应用中…' : '一键应用建议阈值'}
+              </button>
+            </div>
+            <div className="insight-list">
+              {workflowInsights.recommendations.map((item) => (
+                <article key={item.code} className={`insight-item ${item.level}`}>
+                  <header>
+                    <strong>{item.code}</strong>
+                    <span>{item.level.toUpperCase()}</span>
+                  </header>
+                  <p>{item.message}</p>
+                  <em>{item.action}</em>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无自动洞察数据</p>
+        )}
       </section>
     </div>
   )

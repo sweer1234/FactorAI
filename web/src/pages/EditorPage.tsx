@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import {
   Background,
   Controls,
@@ -13,7 +13,17 @@ import {
 } from '@xyflow/react'
 import { Link, useParams } from 'react-router-dom'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { GraphNode } from '../types'
+import type { GraphNode, GraphRevision, NodeDefinition, NodeState } from '../types'
+
+type EditorTab = 'library' | 'logs' | 'current'
+type FlowNodeData = {
+  label: string
+  styleVariant?: GraphNode['styleVariant']
+  nodeSpecId?: string
+  params?: Record<string, string | number | boolean>
+  inputs?: string[]
+  outputs?: string[]
+}
 
 function styleByVariant(variant?: GraphNode['styleVariant']) {
   if (variant === 'data') return { background: '#102d3b', color: '#d2eeff', border: '1px solid #1a6b8f' }
@@ -26,51 +36,138 @@ function styleByVariant(variant?: GraphNode['styleVariant']) {
   return { background: '#1f2332', color: '#e7eaff', border: '1px solid #5661c6' }
 }
 
-function toReactNodes(nodes: GraphNode[]): Node[] {
+function toReactNodes(nodes: GraphNode[], nodeLibrary: NodeDefinition[]): Node<FlowNodeData>[] {
+  const specMap = new Map(nodeLibrary.map((item) => [item.id, item]))
   return nodes.map((item) => ({
     id: item.id,
     position: { ...item.position },
-    data: { label: item.label, styleVariant: item.styleVariant },
+    data: {
+      label: item.label,
+      styleVariant: item.styleVariant,
+      nodeSpecId: item.nodeSpecId,
+      params: item.params ?? {},
+      inputs: specMap.get(item.nodeSpecId ?? '')?.inputs ?? [],
+      outputs: specMap.get(item.nodeSpecId ?? '')?.outputs ?? [],
+    },
     style: {
       ...styleByVariant(item.styleVariant),
       borderRadius: 10,
+      minWidth: 148,
     },
   }))
 }
 
-function toGraphNodes(nodes: Node[]): GraphNode[] {
+function toGraphNodes(nodes: Node<FlowNodeData>[]): GraphNode[] {
   return nodes.map((item) => ({
     id: item.id,
     label: String(item.data?.label ?? item.id),
     position: { x: item.position.x, y: item.position.y },
     styleVariant: (item.data?.styleVariant as GraphNode['styleVariant']) ?? 'default',
+    nodeSpecId: item.data?.nodeSpecId,
+    params: item.data?.params ?? {},
   }))
 }
 
-function statusText(index: number) {
-  if (index === 0) return '已完成'
-  if (index === 1) return '运行中'
-  return '待运行'
+function nodeStatusText(status: NodeState['status'] | undefined) {
+  if (status === 'running') return '运行中'
+  if (status === 'success') return '完成'
+  if (status === 'failed') return '失败'
+  if (status === 'queued') return '排队'
+  return '未运行'
 }
 
 export function EditorPage() {
   const { workflowId = '' } = useParams()
-  const { workflows, nodeLibrary, getGraphByWorkflowId, saveWorkflowGraph, runWorkflow } = useWorkspace()
+  const {
+    workflows,
+    nodeLibrary,
+    getGraphByWorkflowId,
+    saveWorkflowGraph,
+    runWorkflow,
+    getLatestRunByWorkflowId,
+    getRunLogs,
+    getNodeStates,
+    refreshExecutionByWorkflowId,
+    getArtifactsByWorkflowId,
+    uploadArtifactForWorkflow,
+    applyContractFixes,
+    rollbackContractFixes,
+    getGraphRevisions,
+  } = useWorkspace()
+
+  const [activeTab, setActiveTab] = useState<EditorTab>('library')
   const [keyword, setKeyword] = useState('')
   const workflow = workflows.find((item) => item.id === workflowId)
   const graph = workflow ? getGraphByWorkflowId(workflow.id) : undefined
+  const seedNodes = useMemo(() => toReactNodes(graph?.nodes ?? [], nodeLibrary), [graph?.nodes, nodeLibrary])
+  const seedEdges = useMemo(() => (graph?.edges ?? []).map((edge) => ({ ...edge })), [graph?.edges])
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(toReactNodes(graph?.nodes ?? []))
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>((graph?.edges ?? []).map((edge) => ({ ...edge })))
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(seedNodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(seedEdges)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const nodeSeqRef = useRef(1000)
+  const nodeSeqRef = useRef(2000)
+  const saveDebounceRef = useRef<number | null>(null)
+  const refreshExecutionRef = useRef(refreshExecutionByWorkflowId)
+  const graphRevisionRef = useRef(getGraphRevisions)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [editorNotice, setEditorNotice] = useState<string | null>(null)
+  const [applyingFixes, setApplyingFixes] = useState(false)
+  const [rollingBackFixes, setRollingBackFixes] = useState(false)
+  const [loadingRevisions, setLoadingRevisions] = useState(false)
+  const [fixRevisions, setFixRevisions] = useState<GraphRevision[]>([])
+  const activeWorkflowId = workflow?.id
 
   useEffect(() => {
-    const seedNodes = toReactNodes(graph?.nodes ?? [])
-    const seedEdges = (graph?.edges ?? []).map((edge) => ({ ...edge }))
+    refreshExecutionRef.current = refreshExecutionByWorkflowId
+  }, [refreshExecutionByWorkflowId])
+
+  useEffect(() => {
+    graphRevisionRef.current = getGraphRevisions
+  }, [getGraphRevisions])
+
+  useEffect(() => {
     setNodes(seedNodes)
     setEdges(seedEdges)
-  }, [workflowId])
+  }, [workflowId, seedNodes, seedEdges, setNodes, setEdges])
+
+  useEffect(() => {
+    if (!activeWorkflowId) return
+    if (saveDebounceRef.current) {
+      window.clearTimeout(saveDebounceRef.current)
+    }
+    saveDebounceRef.current = window.setTimeout(() => {
+      void saveWorkflowGraph(activeWorkflowId, {
+        nodes: toGraphNodes(nodes),
+        edges: edges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          animated: Boolean(edge.animated),
+        })),
+      })
+    }, 320)
+  }, [nodes, edges, saveWorkflowGraph, activeWorkflowId])
+
+  useEffect(() => {
+    if (!workflow?.id) return
+    void refreshExecutionRef.current(workflow.id)
+  }, [workflow?.id])
+
+  useEffect(() => {
+    if (!workflow?.id) return
+    const load = async () => {
+      setLoadingRevisions(true)
+      try {
+        const rows = await graphRevisionRef.current(workflow.id, 'contract_fix_apply')
+        setFixRevisions(rows)
+      } catch {
+        setFixRevisions([])
+      } finally {
+        setLoadingRevisions(false)
+      }
+    }
+    void load()
+  }, [workflow?.id])
 
   const currentSelectedNodeId = useMemo(() => {
     if (selectedNodeId && nodes.some((item) => item.id === selectedNodeId)) {
@@ -78,19 +175,6 @@ export function EditorPage() {
     }
     return nodes[0]?.id ?? null
   }, [selectedNodeId, nodes])
-
-  useEffect(() => {
-    if (!workflow) return
-    saveWorkflowGraph(workflow.id, {
-      nodes: toGraphNodes(nodes),
-      edges: edges.map((edge) => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        animated: Boolean(edge.animated),
-      })),
-    })
-  }, [nodes, edges])
 
   const groupedLibrary = useMemo(() => {
     const filtered = nodeLibrary.filter((item) => {
@@ -102,7 +186,6 @@ export function EditorPage() {
         item.description.toLowerCase().includes(key)
       )
     })
-
     return filtered.reduce<Record<string, typeof nodeLibrary>>((acc, item) => {
       if (!acc[item.category]) acc[item.category] = []
       acc[item.category].push(item)
@@ -111,11 +194,45 @@ export function EditorPage() {
   }, [nodeLibrary, keyword])
 
   const selectedDefinition = useMemo(() => {
-    const nodeName = nodes.find((item) => item.id === currentSelectedNodeId)?.data?.label
+    const node = nodes.find((item) => item.id === currentSelectedNodeId)
+    const byId = nodeLibrary.find((item) => item.id === node?.data?.nodeSpecId)
+    if (byId) return byId
+    const nodeName = node?.data?.label
     return nodeLibrary.find((item) => item.name === nodeName) ?? nodeLibrary[0]
   }, [nodes, currentSelectedNodeId, nodeLibrary])
 
+  const latestRun = workflow ? getLatestRunByWorkflowId(workflow.id) : undefined
+  const runLogs = getRunLogs(latestRun?.id)
+  const nodeStates = getNodeStates(latestRun?.id)
+  const artifacts = workflow ? getArtifactsByWorkflowId(workflow.id) : []
+  const nodeStateMap = new Map(nodeStates.map((item) => [item.nodeId, item]))
+
+  const currentNodeList = [...nodes].sort((a, b) => a.position.x - b.position.x).map((node) => {
+    const state = nodeStateMap.get(node.id)
+    return {
+      id: node.id,
+      name: String(node.data?.label ?? node.id),
+      status: state?.status,
+    }
+  })
+
   const onConnect = (params: Connection) => {
+    const source = nodes.find((item) => item.id === params.source)
+    const target = nodes.find((item) => item.id === params.target)
+    const sourceOutputs = source?.data?.outputs ?? []
+    const targetInputs = target?.data?.inputs ?? []
+    if (
+      source &&
+      target &&
+      sourceOutputs.length > 0 &&
+      targetInputs.length > 0 &&
+      sourceOutputs.every((out) => !targetInputs.includes(out))
+    ) {
+      setEditorNotice(
+        `连线失败：${String(source.data.label)} 输出[${sourceOutputs.join(', ')}] 与 ${String(target.data.label)} 输入[${targetInputs.join(', ')}] 不匹配`,
+      )
+      return
+    }
     setEdges((eds) => addEdge({ ...params, animated: true }, eds))
   }
 
@@ -134,14 +251,18 @@ export function EditorPage() {
             : definition?.category.startsWith('05')
               ? 'backtest'
               : 'default'
-    const nextNode: Node = {
+    const nextNode: Node<FlowNodeData> = {
       id: nextId,
-      data: { label: name, styleVariant },
-      position: { x: 260 + (nodes.length % 3) * 240, y: 280 + (nodes.length % 2) * 160 },
-      style: {
-        ...styleByVariant(styleVariant),
-        borderRadius: 10,
+      data: {
+        label: name,
+        styleVariant,
+        nodeSpecId: definition?.id,
+        params: Object.fromEntries((definition?.params ?? []).map((item) => [item.key, item.defaultValue ?? ''])),
+        inputs: definition?.inputs ?? [],
+        outputs: definition?.outputs ?? [],
       },
+      position: { x: 280 + (nodes.length % 3) * 210, y: 260 + (nodes.length % 2) * 160 },
+      style: { ...styleByVariant(styleVariant), borderRadius: 10, minWidth: 148 },
     }
     setNodes((prev) => [...prev, nextNode])
     setSelectedNodeId(nextId)
@@ -152,6 +273,114 @@ export function EditorPage() {
     setNodes((prev) => prev.filter((item) => item.id !== selectedNodeId))
     setEdges((prev) => prev.filter((item) => item.source !== selectedNodeId && item.target !== selectedNodeId))
     setSelectedNodeId(null)
+  }
+
+  const selectedNode = nodes.find((item) => item.id === currentSelectedNodeId)
+  const selectedParams = selectedNode?.data?.params ?? {}
+  const selectedNodeSpecId = selectedNode?.data?.nodeSpecId
+
+  const updateParam = (key: string, value: string | number | boolean) => {
+    if (!currentSelectedNodeId) return
+    setNodes((prev) =>
+      prev.map((node) => {
+        if (node.id !== currentSelectedNodeId) return node
+        const current = node.data?.params ?? {}
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            params: { ...current, [key]: value },
+          },
+        }
+      }),
+    )
+  }
+
+  const onUploadClicked = () => fileRef.current?.click()
+
+  const onAutoApplyFixes = async () => {
+    if (!workflow) return
+    setApplyingFixes(true)
+    try {
+      const result = await applyContractFixes(workflow.id)
+      if (!result) {
+        setEditorNotice('自动修复未执行')
+        return
+      }
+      const nextGraph = result.workflow.graph
+      setNodes(toReactNodes(nextGraph.nodes ?? [], nodeLibrary))
+      setEdges((nextGraph.edges ?? []).map((edge) => ({ ...edge })))
+      const appliedCount = result.appliedActions.filter((item) => item.status === 'applied').length
+      setEditorNotice(
+        `自动修复已应用 ${appliedCount} 条，当前错误 ${result.compile.errors.length} 条，警告 ${result.compile.warnings.length} 条`,
+      )
+      const rows = await graphRevisionRef.current(workflow.id, 'contract_fix_apply')
+      setFixRevisions(rows)
+    } catch {
+      setEditorNotice('自动修复失败，请稍后重试')
+    } finally {
+      setApplyingFixes(false)
+    }
+  }
+
+  const onRollbackFixes = async (revisionId?: string) => {
+    if (!workflow) return
+    setRollingBackFixes(true)
+    try {
+      const result = await rollbackContractFixes(workflow.id, revisionId)
+      if (!result) {
+        setEditorNotice('回滚未执行')
+        return
+      }
+      const nextGraph = result.workflow.graph
+      setNodes(toReactNodes(nextGraph.nodes ?? [], nodeLibrary))
+      setEdges((nextGraph.edges ?? []).map((edge) => ({ ...edge })))
+      setEditorNotice(
+        `已回滚修复版本（${result.restoredRevisionId.slice(-6)}），当前错误 ${result.compile.errors.length} 条，警告 ${result.compile.warnings.length} 条`,
+      )
+      const rows = await graphRevisionRef.current(workflow.id, 'contract_fix_apply')
+      setFixRevisions(rows)
+    } catch {
+      setEditorNotice('回滚失败：暂无可回滚版本')
+    } finally {
+      setRollingBackFixes(false)
+    }
+  }
+
+  const bindArtifactToSelected = (artifactId: string, fileName: string) => {
+    if (!selectedNodeSpecId) {
+      setEditorNotice('请先选择一个节点')
+      return
+    }
+    if (selectedNodeSpecId === 'basic.model_upload') {
+      updateParam('artifactId', artifactId)
+      updateParam('path', fileName)
+      setEditorNotice(`已绑定模型制品：${fileName}`)
+      return
+    }
+    if (selectedNodeSpecId === 'offline.alphagen_upload') {
+      updateParam('artifactId', artifactId)
+      updateParam('artifact_path', fileName)
+      setEditorNotice(`已绑定 AlphaGen 制品：${fileName}`)
+      return
+    }
+    setEditorNotice('当前节点非上传类节点，未自动绑定')
+  }
+
+  const onUploadSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || !workflow) return
+    try {
+      const artifact = await uploadArtifactForWorkflow(workflow.id, file, 'node-input')
+      if (artifact) {
+        bindArtifactToSelected(artifact.id, artifact.fileName)
+      }
+      setEditorNotice(`上传成功：${file.name}`)
+    } catch {
+      setEditorNotice(`上传失败：${file.name}`)
+    } finally {
+      event.target.value = ''
+    }
   }
 
   if (!workflow) {
@@ -169,34 +398,168 @@ export function EditorPage() {
   return (
     <section className="editor-layout">
       <aside className="editor-left panel">
-        <div className="panel-header">
-          <h3>节点库</h3>
-          <input
-            className="search-input"
-            placeholder="搜索节点"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-          />
+        <div className="editor-tabs">
+          <button
+            type="button"
+            className={`editor-tab ${activeTab === 'library' ? 'active' : ''}`}
+            onClick={() => setActiveTab('library')}
+          >
+            节点库
+          </button>
+          <button
+            type="button"
+            className={`editor-tab ${activeTab === 'logs' ? 'active' : ''}`}
+            onClick={() => setActiveTab('logs')}
+          >
+            日志
+          </button>
+          <button
+            type="button"
+            className={`editor-tab ${activeTab === 'current' ? 'active' : ''}`}
+            onClick={() => setActiveTab('current')}
+          >
+            当前节点
+          </button>
         </div>
-        <div className="tree-list">
-          {Object.entries(groupedLibrary).map(([category, list]) => (
-            <div key={category} className="tree-group">
-              <h4>
-                {category} <span>{list.length}</span>
-              </h4>
-              <ul>
-                {list.map((item) => (
-                  <li key={item.id}>
-                    <button type="button" onClick={() => addNodeFromLibrary(item.name)}>
-                      {item.name}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+
+        {activeTab === 'library' ? (
+          <>
+            <div className="panel-header">
+              <button type="button" className="primary ghost mini" onClick={onUploadClicked}>
+                上传
+              </button>
+              <button type="button" className="primary ghost mini" onClick={() => void onAutoApplyFixes()} disabled={applyingFixes}>
+                {applyingFixes ? '修复中…' : '自动修复契约'}
+              </button>
+              <button
+                type="button"
+                className="primary ghost mini"
+                onClick={() => void onRollbackFixes()}
+                disabled={rollingBackFixes}
+              >
+                {rollingBackFixes ? '回滚中…' : '回滚修复'}
+              </button>
+              <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onUploadSelected} />
+              <input
+                className="search-input"
+                placeholder="搜索目录"
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+              />
             </div>
-          ))}
-          {Object.keys(groupedLibrary).length === 0 ? <p className="muted">未搜索到匹配节点。</p> : null}
-        </div>
+            {editorNotice ? <p className="muted">{editorNotice}</p> : null}
+            <div className="tree-group">
+              <h4>
+                修复历史
+                <span>{loadingRevisions ? '加载中' : fixRevisions.length}</span>
+              </h4>
+              {fixRevisions.length === 0 ? (
+                <p className="muted">暂无自动修复历史</p>
+              ) : (
+                <ul>
+                  {fixRevisions.slice(0, 6).map((item) => (
+                    <li key={item.id}>
+                      <button type="button" onClick={() => void onRollbackFixes(item.id)} disabled={rollingBackFixes}>
+                        #{item.revisionNo} · {item.id.slice(-6)}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="tree-list">
+              {Object.entries(groupedLibrary).map(([category, list]) => (
+                <div key={category} className="tree-group">
+                  <h4>
+                    {category} <span>{list.length}</span>
+                  </h4>
+                  <ul>
+                    {list.map((item) => (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          className={selectedDefinition?.id === item.id ? 'active' : ''}
+                          onClick={() => addNodeFromLibrary(item.name)}
+                        >
+                          {item.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+              {Object.keys(groupedLibrary).length === 0 ? <p className="muted">未搜索到匹配节点。</p> : null}
+            </div>
+            <div className="panel-header">
+              <h3>已上传文件</h3>
+              <span className="tag">{artifacts.length}</span>
+            </div>
+            <div className="tree-list">
+              {artifacts.slice(0, 6).map((item) => (
+                <div key={item.id} className="tree-group">
+                  <h4>{item.fileName}</h4>
+                  <p className="muted">
+                    {item.kind}
+                    {item.version ? ` v${item.version}` : ''}
+                    {item.isActive ? ' · active' : ''}
+                    {' · '}
+                    {(item.fileSize / 1024).toFixed(1)} KB
+                  </p>
+                  <button type="button" className="primary ghost mini" onClick={() => bindArtifactToSelected(item.id, item.fileName)}>
+                    绑定到当前节点
+                  </button>
+                </div>
+              ))}
+              {artifacts.length === 0 ? <p className="muted">暂无上传文件</p> : null}
+            </div>
+          </>
+        ) : null}
+
+        {activeTab === 'logs' ? (
+          <div className="editor-log-list">
+            <div className="panel-header">
+              <h3>运行日志</h3>
+              <span className="tag">{latestRun ? latestRun.status : '无任务'}</span>
+            </div>
+            {runLogs.length === 0 ? (
+              <p className="muted">暂无日志，运行工作流后可查看节点执行明细。</p>
+            ) : (
+              runLogs.map((item) => (
+                <article
+                  key={item.id}
+                  className={`editor-log-item ${item.level.toLowerCase()}`}
+                  onClick={() => item.nodeId && setSelectedNodeId(item.nodeId)}
+                >
+                  <header>
+                    <span>{item.level}</span>
+                    <time>{item.createdAt}</time>
+                  </header>
+                  <p>{item.message}</p>
+                </article>
+              ))
+            )}
+          </div>
+        ) : null}
+
+        {activeTab === 'current' ? (
+          <div className="editor-current-list">
+            <div className="panel-header">
+              <h3>当前节点</h3>
+              <span className="tag">{currentNodeList.length}</span>
+            </div>
+            <ul>
+              {currentNodeList.map((item) => (
+                <li key={item.id}>
+                  <button type="button" onClick={() => setSelectedNodeId(item.id)}>
+                    <span className={`dot ${item.status ?? 'idle'}`} />
+                    <strong>{item.name}</strong>
+                    <em>{nodeStatusText(item.status)}</em>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </aside>
 
       <div className="editor-canvas panel">
@@ -206,10 +569,10 @@ export function EditorPage() {
             <span className="tag">节点 {nodes.length}</span>
             <span className="tag">连线 {edges.length}</span>
             <button type="button" className="primary ghost" onClick={removeSelectedNode}>
-              删除选中节点
+              删除节点
             </button>
-            <button type="button" className="primary" onClick={() => runWorkflow(workflow.id)}>
-              快速运行
+            <button type="button" className="primary" onClick={() => void runWorkflow(workflow.id)}>
+              运行工作流
             </button>
           </div>
         </div>
@@ -232,54 +595,105 @@ export function EditorPage() {
 
       <aside className="editor-right panel">
         <div className="panel-header">
-          <h3>节点详情</h3>
+          <h3>{selectedDefinition?.name ?? '节点详情'}</h3>
           <span className="tag">{currentSelectedNodeId ? `节点 ${currentSelectedNodeId}` : '未选择'}</span>
         </div>
-        <article className="node-detail">
-          <h4>{selectedDefinition.name}</h4>
-          <p>{selectedDefinition.description}</p>
 
-          <div className="detail-block">
-            <h5>输入字段</h5>
-            <ul>
-              {selectedDefinition.inputs.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
+        {selectedDefinition ? (
+          <article className="node-doc">
+            <section>
+              <h4>节点介绍</h4>
+              <p>{selectedDefinition.doc?.intro ?? selectedDefinition.description}</p>
+            </section>
 
-          <div className="detail-block">
-            <h5>输出字段</h5>
-            <ul>
-              {selectedDefinition.outputs.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
+            <section>
+              <h4>工作流示例</h4>
+              <p>{selectedDefinition.doc?.workflow_example ?? '推荐将该节点置于因子构建主链路中。'}</p>
+            </section>
 
-          <div className="detail-block">
-            <h5>核心参数</h5>
-            <ul>
-              {selectedDefinition.params.map((param) => (
-                <li key={param.key}>
-                  {param.key} ({param.type}) = {String(param.defaultValue ?? '-')}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </article>
+            <section>
+              <h4>核心参数</h4>
+              <ul>
+                {selectedDefinition.params.map((param) => (
+                  <li key={param.key}>
+                    <strong>{param.key}</strong>
+                    {param.type === 'boolean' ? (
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selectedParams[param.key] ?? param.defaultValue ?? false)}
+                          onChange={(event) => updateParam(param.key, event.target.checked)}
+                        />
+                        <span>启用</span>
+                      </label>
+                    ) : param.type === 'select' ? (
+                      <select
+                        value={String(selectedParams[param.key] ?? param.defaultValue ?? '')}
+                        onChange={(event) => updateParam(param.key, event.target.value)}
+                      >
+                        {(param.options ?? []).map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : param.key === 'artifactId' ? (
+                      <select
+                        value={String(selectedParams[param.key] ?? param.defaultValue ?? '')}
+                        onChange={(event) => updateParam(param.key, event.target.value)}
+                      >
+                        <option value="">未绑定</option>
+                        {artifacts.map((artifact) => (
+                          <option key={artifact.id} value={artifact.id}>
+                            {artifact.fileName} ({artifact.id})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        className="search-input"
+                        value={String(selectedParams[param.key] ?? param.defaultValue ?? '')}
+                        onChange={(event) =>
+                          updateParam(
+                            param.key,
+                            param.type === 'number' ? Number(event.target.value || 0) : event.target.value,
+                          )
+                        }
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
 
-        <div className="timeline">
-          <h5>运行阶段</h5>
-          <ol>
-            {['数据准备', '特征处理', '模型训练', '因子生成', '回测评估'].map((step, idx) => (
-              <li key={step}>
-                <span>{step}</span>
-                <em>{statusText(idx)}</em>
-              </li>
-            ))}
-          </ol>
-        </div>
+            <section>
+              <h4>输入字段</h4>
+              <ul>
+                {selectedDefinition.inputs.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </section>
+
+            <section>
+              <h4>输出字段</h4>
+              <ul>
+                {selectedDefinition.outputs.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </section>
+
+            <section>
+              <h4>注意事项</h4>
+              <ul>
+                {(selectedDefinition.doc?.notes ?? ['请确保输入 schema 与节点要求一致。']).map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </section>
+          </article>
+        ) : null}
       </aside>
     </section>
   )

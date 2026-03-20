@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+pydantic-settings
+python-multipart
+numpy
+pandas
+scikit-learn
+networkx
+httpx

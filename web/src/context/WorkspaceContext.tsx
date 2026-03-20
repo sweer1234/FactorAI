@@ -1,285 +1,423 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useEffect, useState, type ReactNode } from 'react'
-import { nodeLibrary, runRecords, seededGraphs, seededReports, templates, workflowList } from '../data/mock'
+import {
+  batchRunAction as apiBatchRunAction,
+  cancelRun as apiCancelRun,
+  applyWorkflowContractFixes,
+  cloneTemplate as apiCloneTemplate,
+  createWorkflow as apiCreateWorkflow,
+  deleteTemplate as apiDeleteTemplate,
+  fetchArtifacts,
+  fetchBootstrap,
+  fetchReport,
+  fetchWorkflowGraphRevisions,
+  fetchRunLogs,
+  fetchRunNodeStates,
+  fetchRuns,
+  fetchTemplates,
+  fetchWorkflows,
+  publishTemplateFromWorkflow,
+  rollbackWorkflowContractFixes,
+  retryRun as apiRetryRun,
+  retryRunFromFailedNode as apiRetryRunFromFailedNode,
+  retryRunWithStrategy,
+  runWorkflow as apiRunWorkflow,
+  saveWorkflowDraft as apiSaveWorkflowDraft,
+  saveWorkflowGraph as apiSaveWorkflowGraph,
+  subscribeTemplate as apiSubscribeTemplate,
+  unsubscribeTemplate as apiUnsubscribeTemplate,
+  updateTemplate as apiUpdateTemplate,
+  uploadArtifact,
+} from '../api/client'
+import {
+  nodeLibrary as fallbackNodeLibrary,
+  runRecords as fallbackRuns,
+  templates as fallbackTemplates,
+  workflowList,
+} from '../data/mock'
 import type {
-  ReportMetric,
+  Artifact,
+  ContractFixApplyResult,
+  ContractFixRollbackResult,
+  GraphRevision,
+  NodeDefinition,
+  NodeState,
   ReportSnapshot,
+  RunLog,
   RunRecord,
-  RunStatus,
   Template,
   Workflow,
   WorkflowGraph,
 } from '../types'
 
-const STORAGE_KEY = 'factorlab.workspace.v2'
-
-interface WorkspaceStore {
+export interface WorkspaceStore {
   workflows: Workflow[]
   templates: Template[]
   runs: RunRecord[]
-  nodeLibrary: typeof nodeLibrary
+  nodeLibrary: NodeDefinition[]
+  artifactsByWorkflowId: Record<string, Artifact[]>
   reports: Record<string, ReportSnapshot>
+  runLogsByRunId: Record<string, RunLog[]>
+  nodeStatesByRunId: Record<string, NodeState[]>
+  loading: boolean
+  backendOnline: boolean
   getGraphByWorkflowId: (workflowId: string) => WorkflowGraph | undefined
+  getArtifactsByWorkflowId: (workflowId: string) => Artifact[]
+  getLatestRunByWorkflowId: (workflowId: string) => RunRecord | undefined
+  getRunLogs: (runId?: string) => RunLog[]
+  getNodeStates: (runId?: string) => NodeState[]
   createWorkflow: (payload: {
     name: string
     category: string
     tags: string[]
     description?: string
     graph?: WorkflowGraph
-    sourceTemplateId?: string
-  }) => string
-  cloneTemplate: (templateId: string) => string | null
-  saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => void
-  saveWorkflowDraft: (workflowId: string) => void
-  runWorkflow: (workflowId: string) => void
+  }) => Promise<string>
+  cloneTemplate: (templateId: string) => Promise<string | null>
+  publishTemplate: (workflowId: string) => Promise<string | null>
+  toggleTemplateSubscription: (templateId: string, subscribe: boolean) => Promise<void>
+  updateTemplateMeta: (
+    templateId: string,
+    payload: { name?: string; description?: string; tags?: string[]; category?: string; templateGroup?: string },
+  ) => Promise<void>
+  deleteTemplateById: (templateId: string) => Promise<void>
+  saveWorkflowGraph: (workflowId: string, graph: WorkflowGraph) => Promise<void>
+  saveWorkflowDraft: (workflowId: string) => Promise<void>
+  runWorkflow: (workflowId: string) => Promise<void>
   getReportByWorkflowId: (workflowId: string) => ReportSnapshot | undefined
+  refreshExecutionByWorkflowId: (workflowId: string) => Promise<void>
+  refreshArtifactsByWorkflowId: (workflowId: string) => Promise<void>
+  uploadArtifactForWorkflow: (workflowId: string, file: File, kind?: string) => Promise<Artifact | null>
+  applyContractFixes: (workflowId: string) => Promise<ContractFixApplyResult | null>
+  rollbackContractFixes: (workflowId: string, revisionId?: string) => Promise<ContractFixRollbackResult | null>
+  getGraphRevisions: (workflowId: string, source?: string) => Promise<GraphRevision[]>
+  cancelRunById: (runId: string) => Promise<void>
+  retryRunById: (
+    runId: string,
+    options?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
+  ) => Promise<void>
+  retryRunFromFailedNodeById: (
+    runId: string,
+    options?: { failedNodeId?: string; strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number },
+  ) => Promise<void>
+  batchRunAction: (payload: {
+    action: 'cancel' | 'retry'
+    runIds: string[]
+    retry?: { strategy?: 'immediate' | 'fixed_backoff'; maxAttempts?: number; backoffSec?: number }
+  }) => Promise<{ total: number; success: number; failed: number }>
   notice: string | null
-}
-
-interface PersistedState {
-  workflows: Workflow[]
-  runs: RunRecord[]
-  graphs: Record<string, WorkflowGraph>
-  reports: Record<string, ReportSnapshot>
 }
 
 export const WorkspaceContext = createContext<WorkspaceStore | null>(null)
 
-function nowText() {
-  const dt = new Date()
-  const p = (num: number) => String(num).padStart(2, '0')
-  return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`
-}
-
-function createDuration(startedAt: number) {
-  const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000))
-  const min = Math.floor(elapsed / 60)
-  const sec = elapsed % 60
-  return `${String(min).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`
-}
-
-function cloneGraph(graph?: WorkflowGraph): WorkflowGraph {
-  return {
-    nodes: (graph?.nodes ?? []).map((item) => ({ ...item, position: { ...item.position } })),
-    edges: (graph?.edges ?? []).map((item) => ({ ...item })),
-  }
-}
-
-function generateRunId() {
-  return `run-${Math.random().toString(36).slice(2, 9)}`
-}
-
-function generateWorkflowId() {
-  return `wf-${Math.random().toString(36).slice(2, 8)}`
-}
-
-function formatRate(value: number) {
-  return `${(value * 100).toFixed(1)}%`
-}
-
-function randomMetricSet(seed: number): ReportMetric[] {
-  const base = (value: number, precision = 3) => (value + seed * 0.003).toFixed(precision)
-  const annual = 0.12 + seed * 0.005
-  const drawdown = -(0.04 + seed * 0.002)
-  const turnover = 0.48 + seed * 0.015
-  return [
-    { label: 'IC均值', value: base(0.072), trend: 'up' },
-    { label: 'RankIC', value: base(0.096), trend: 'up' },
-    { label: '年化收益', value: formatRate(annual), trend: 'up' },
-    { label: '最大回撤', value: formatRate(drawdown), trend: 'down' },
-    { label: '夏普比率', value: base(1.61, 2), trend: 'up' },
-    { label: '换手率', value: base(turnover, 2), trend: 'down' },
-  ]
-}
-
-function randomSeries(seed: number) {
-  const values = [1]
-  for (let i = 1; i < 14; i += 1) {
-    const drift = 0.015 + seed * 0.0008
-    const noise = (Math.sin(i + seed) * 0.02 + 0.01) / 2
-    values.push(Number((values[i - 1] * (1 + drift + noise)).toFixed(4)))
-  }
-  return values
-}
-
-function randomLayer(seed: number) {
-  return [
-    { layer: 'Q1', value: Number((-0.02 - seed * 0.001).toFixed(3)) },
-    { layer: 'Q2', value: Number((0.01 + seed * 0.001).toFixed(3)) },
-    { layer: 'Q3', value: Number((0.04 + seed * 0.001).toFixed(3)) },
-    { layer: 'Q4', value: Number((0.08 + seed * 0.001).toFixed(3)) },
-    { layer: 'Q5', value: Number((0.14 + seed * 0.001).toFixed(3)) },
-  ]
-}
-
-function createInitialState(): PersistedState {
-  if (typeof window !== 'undefined') {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      try {
-        return JSON.parse(raw) as PersistedState
-      } catch {
-        // ignore damaged local cache
-      }
-    }
-  }
-  return {
-    workflows: workflowList,
-    runs: runRecords,
-    graphs: seededGraphs,
-    reports: seededReports,
-  }
+function withFallbackGraph(workflows: Workflow[]) {
+  return workflows.map((item) => ({ ...item, graph: item.graph ?? { nodes: [], edges: [] } }))
 }
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const initial = createInitialState()
-  const [workflows, setWorkflows] = useState<Workflow[]>(initial.workflows)
-  const [runs, setRuns] = useState<RunRecord[]>(initial.runs)
-  const [graphs, setGraphs] = useState<Record<string, WorkflowGraph>>(initial.graphs)
-  const [reports, setReports] = useState<Record<string, ReportSnapshot>>(initial.reports)
+  const [workflows, setWorkflows] = useState<Workflow[]>(withFallbackGraph(workflowList))
+  const [templates, setTemplates] = useState<Template[]>(fallbackTemplates)
+  const [runs, setRuns] = useState<RunRecord[]>(fallbackRuns)
+  const [nodeLibrary, setNodeLibrary] = useState<NodeDefinition[]>(fallbackNodeLibrary)
+  const [artifactsByWorkflowId, setArtifactsByWorkflowId] = useState<Record<string, Artifact[]>>({})
+  const [reports, setReports] = useState<Record<string, ReportSnapshot>>({})
+  const [runLogsByRunId, setRunLogsByRunId] = useState<Record<string, RunLog[]>>({})
+  const [nodeStatesByRunId, setNodeStatesByRunId] = useState<Record<string, NodeState[]>>({})
   const [notice, setNotice] = useState<string | null>(null)
-
-  const persist = (next: PersistedState) => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-    }
-  }
+  const [loading, setLoading] = useState(true)
+  const [backendOnline, setBackendOnline] = useState(false)
 
   const updateNotice = (text: string) => {
     setNotice(text)
-    window.setTimeout(() => setNotice(null), 2400)
+    window.setTimeout(() => setNotice(null), 2600)
+  }
+
+  const getLatestRunByWorkflowId = (workflowId: string) => runs.find((item) => item.workflowId === workflowId)
+
+  const refreshWorkflows = async () => {
+    const list = await fetchWorkflows()
+    setWorkflows(withFallbackGraph(list))
+  }
+
+  const refreshRuns = async () => {
+    const list = await fetchRuns()
+    setRuns(list)
+    return list
+  }
+
+  const refreshTemplates = async () => {
+    const list = await fetchTemplates()
+    setTemplates(list)
+  }
+
+  const refreshReport = async (workflowId: string) => {
+    const report = await fetchReport(workflowId)
+    if (!report) return
+    setReports((prev) => ({ ...prev, [workflowId]: report }))
+  }
+
+  const refreshRunDetails = async (runId: string) => {
+    const [logs, nodeStates] = await Promise.all([fetchRunLogs(runId), fetchRunNodeStates(runId)])
+    setRunLogsByRunId((prev) => ({ ...prev, [runId]: logs }))
+    setNodeStatesByRunId((prev) => ({ ...prev, [runId]: nodeStates }))
+  }
+
+  const refreshArtifactsByWorkflowId = async (workflowId: string) => {
+    if (!backendOnline) return
+    const artifacts = await fetchArtifacts({ workflowId })
+    setArtifactsByWorkflowId((prev) => ({ ...prev, [workflowId]: artifacts }))
+  }
+
+  const refreshExecutionByWorkflowId = async (workflowId: string) => {
+    const latestRuns = await refreshRuns()
+    const latest = latestRuns.find((item) => item.workflowId === workflowId)
+    if (latest) {
+      await refreshRunDetails(latest.id)
+    }
+    await refreshArtifactsByWorkflowId(workflowId)
   }
 
   useEffect(() => {
-    persist({ workflows, runs, graphs, reports })
-  }, [workflows, runs, graphs, reports])
-
-  const createWorkflow: WorkspaceStore['createWorkflow'] = (payload) => {
-    const id = generateWorkflowId()
-    const createdAt = nowText()
-    const workflow: Workflow = {
-      id,
-      name: payload.name.trim(),
-      category: payload.category.trim(),
-      tags: payload.tags,
-      status: 'draft',
-      updatedAt: createdAt,
-      description: payload.description,
-      sourceTemplateId: payload.sourceTemplateId,
+    const bootstrap = async () => {
+      try {
+        const payload = await fetchBootstrap()
+        setWorkflows(withFallbackGraph(payload.workflows))
+        setTemplates(payload.templates)
+        setRuns(payload.runs)
+        setNodeLibrary(payload.nodeLibrary)
+        setBackendOnline(true)
+      } catch {
+        setBackendOnline(false)
+      } finally {
+        setLoading(false)
+      }
     }
-    const nextWorkflows = [workflow, ...workflows]
-    const nextGraphs = {
-      ...graphs,
-      [id]: cloneGraph(payload.graph),
+    bootstrap()
+  }, [])
+
+  const createWorkflow: WorkspaceStore['createWorkflow'] = async (payload) => {
+    if (!backendOnline) {
+      const localId = `wf-local-${Date.now()}`
+      setWorkflows((prev) => [
+        {
+          id: localId,
+          name: payload.name,
+          category: payload.category,
+          tags: payload.tags,
+          status: 'draft',
+          updatedAt: new Date().toISOString(),
+          description: payload.description,
+          graph: payload.graph ?? { nodes: [], edges: [] },
+        },
+        ...prev,
+      ])
+      updateNotice('本地模式：已创建工作流')
+      return localId
     }
-    setWorkflows(nextWorkflows)
-    setGraphs(nextGraphs)
-    updateNotice(`已创建工作流：${workflow.name}`)
-    return id
+
+    const created = await apiCreateWorkflow(payload)
+    setWorkflows((prev) => [created, ...prev])
+    updateNotice(`已创建工作流：${created.name}`)
+    return created.id
   }
 
-  const cloneTemplate: WorkspaceStore['cloneTemplate'] = (templateId) => {
-    const source = templates.find((item) => item.id === templateId)
-    if (!source) return null
-    const nextId = createWorkflow({
-      name: `${source.name}-副本`,
-      category: source.category,
-      tags: source.tags,
-      description: source.description,
-      graph: source.graph,
-      sourceTemplateId: source.id,
-    })
-    return nextId
-  }
-
-  const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = (workflowId, graph) => {
-    const nextGraphs = {
-      ...graphs,
-      [workflowId]: cloneGraph(graph),
+  const cloneTemplate: WorkspaceStore['cloneTemplate'] = async (templateId) => {
+    if (!backendOnline) {
+      const template = templates.find((item) => item.id === templateId)
+      if (!template) return null
+      const id = await createWorkflow({
+        name: `${template.name}-副本`,
+        category: template.category,
+        tags: template.tags,
+        description: template.description,
+        graph: template.graph,
+      })
+      return id
     }
-    setGraphs(nextGraphs)
+
+    const created = await apiCloneTemplate(templateId)
+    setWorkflows((prev) => [created, ...prev])
+    updateNotice(`模板复制完成：${created.name}`)
+    return created.id
   }
 
-  const saveWorkflowDraft: WorkspaceStore['saveWorkflowDraft'] = (workflowId) => {
-    const nextWorkflows: Workflow[] = workflows.map((item) =>
-      item.id === workflowId ? { ...item, status: 'draft', updatedAt: nowText() } : item,
-    )
-    setWorkflows(nextWorkflows)
-    const workflowName = workflows.find((item) => item.id === workflowId)?.name ?? workflowId
-    updateNotice(`已保存草稿：${workflowName}`)
+  const publishTemplate: WorkspaceStore['publishTemplate'] = async (workflowId) => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法发布模板')
+      return null
+    }
+    const template = await publishTemplateFromWorkflow(workflowId)
+    setTemplates((prev) => [template, ...prev])
+    updateNotice(`已发布模板：${template.name}`)
+    return template.id
   }
 
-  const updateRunStatus = (runId: string, status: RunStatus, message: string, duration?: string) => {
-    setRuns((prev) => {
-      const nextRuns = prev.map((run) =>
-        run.id === runId
-          ? {
-              ...run,
-              status,
-              message,
-              duration: duration ?? run.duration,
-            }
-          : run,
+  const toggleTemplateSubscription: WorkspaceStore['toggleTemplateSubscription'] = async (templateId, subscribe) => {
+    if (!backendOnline) return
+    const updated = subscribe ? await apiSubscribeTemplate(templateId) : await apiUnsubscribeTemplate(templateId)
+    setTemplates((prev) => prev.map((item) => (item.id === templateId ? { ...item, ...updated } : item)))
+    updateNotice(subscribe ? '已订阅模板' : '已取消订阅')
+  }
+
+  const updateTemplateMeta: WorkspaceStore['updateTemplateMeta'] = async (templateId, payload) => {
+    if (!backendOnline) return
+    const updated = await apiUpdateTemplate(templateId, payload)
+    setTemplates((prev) => prev.map((item) => (item.id === templateId ? { ...item, ...updated } : item)))
+    updateNotice(`模板已更新：${updated.name}`)
+  }
+
+  const deleteTemplateById: WorkspaceStore['deleteTemplateById'] = async (templateId) => {
+    if (!backendOnline) return
+    const result = await apiDeleteTemplate(templateId)
+    setTemplates((prev) => prev.filter((item) => item.id !== templateId))
+    updateNotice(`模板已删除：版本 ${result.deletedVersionCount}，订阅 ${result.deletedSubscriptionCount}`)
+  }
+
+  const saveWorkflowGraph: WorkspaceStore['saveWorkflowGraph'] = async (workflowId, graph) => {
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? { ...item, graph } : item)))
+    if (!backendOnline) return
+    try {
+      const updated = await apiSaveWorkflowGraph(workflowId, graph)
+      setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? updated : item)))
+    } catch {
+      updateNotice('保存失败：后端不可达')
+    }
+  }
+
+  const saveWorkflowDraft: WorkspaceStore['saveWorkflowDraft'] = async (workflowId) => {
+    if (!backendOnline) {
+      setWorkflows((prev) =>
+        prev.map((item) =>
+          item.id === workflowId ? { ...item, status: 'draft', updatedAt: new Date().toISOString() } : item,
+        ),
       )
-      return nextRuns
-    })
+      updateNotice('本地模式：草稿已保存')
+      return
+    }
+    const updated = await apiSaveWorkflowDraft(workflowId)
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? updated : item)))
+    updateNotice(`已保存草稿：${updated.name}`)
   }
 
-  const runWorkflow: WorkspaceStore['runWorkflow'] = (workflowId) => {
+  const runWorkflow: WorkspaceStore['runWorkflow'] = async (workflowId) => {
     const workflow = workflows.find((item) => item.id === workflowId)
     if (!workflow) return
 
-    const startedAt = Date.now()
-    const runId = generateRunId()
-    const createdAt = nowText()
-    const queuedRun: RunRecord = {
-      id: runId,
-      workflowId,
-      workflowName: workflow.name,
-      status: 'queued',
-      duration: '00m 00s',
-      createdAt,
-      message: '任务已进入队列，等待调度。',
+    if (!backendOnline) {
+      updateNotice('本地模式：已模拟运行')
+      return
     }
-    const nextRuns = [queuedRun, ...runs]
-    const nextWorkflows: Workflow[] = workflows.map((item) =>
-      item.id === workflowId ? { ...item, status: 'running', lastRun: createdAt, updatedAt: createdAt } : item,
-    )
-    setRuns(nextRuns)
-    setWorkflows(nextWorkflows)
+    const run = await apiRunWorkflow(workflowId)
+    setRuns((prev) => [run, ...prev])
     updateNotice(`已启动运行：${workflow.name}`)
 
-    window.setTimeout(() => {
-      updateRunStatus(runId, 'running', '正在执行节点链路与参数校验...')
-    }, 650)
-
-    window.setTimeout(() => {
-      const duration = createDuration(startedAt)
-      updateRunStatus(runId, 'success', '执行完成，报告已更新。', duration)
-      const seed = Math.max(1, workflow.name.length % 7)
-      const report: ReportSnapshot = {
-        workflowId,
-        workflowName: workflow.name,
-        metrics: randomMetricSet(seed),
-        equitySeries: randomSeries(seed),
-        layerReturn: randomLayer(seed),
-        updatedAt: nowText(),
+    let round = 0
+    const poll = async () => {
+      round += 1
+      const [latestRuns] = await Promise.all([
+        refreshRuns(),
+        refreshWorkflows(),
+        refreshTemplates(),
+        refreshReport(workflowId),
+        refreshArtifactsByWorkflowId(workflowId),
+      ])
+      const latest = latestRuns.find((item) => item.workflowId === workflowId) ?? run
+      await refreshRunDetails(latest.id)
+      if (round < 20 && latest.status !== 'success' && latest.status !== 'failed' && latest.status !== 'cancelled') {
+        window.setTimeout(poll, 1200)
       }
-      setReports((prev) => {
-        const nextReports = {
-          ...prev,
-          [workflowId]: report,
-        }
-        return nextReports
-      })
-      setWorkflows((prev) => {
-        const finalWorkflows: Workflow[] = prev.map((item) =>
-          item.id === workflowId ? { ...item, status: 'published', lastRun: nowText() } : item,
-        )
-        return finalWorkflows
-      })
-      updateNotice(`运行完成：${workflow.name}`)
-    }, 2800)
+    }
+    window.setTimeout(poll, 900)
+  }
+
+  const getGraphByWorkflowId = (workflowId: string) =>
+    workflows.find((item) => item.id === workflowId)?.graph ?? { nodes: [], edges: [] }
+  const getArtifactsByWorkflowId = (workflowId: string) => artifactsByWorkflowId[workflowId] ?? []
+
+  const getReportByWorkflowId = (workflowId: string) => reports[workflowId]
+
+  const getRunLogs = (runId?: string) => {
+    if (!runId) return []
+    return runLogsByRunId[runId] ?? []
+  }
+
+  const getNodeStates = (runId?: string) => {
+    if (!runId) return []
+    return nodeStatesByRunId[runId] ?? []
+  }
+
+  const uploadArtifactForWorkflow = async (workflowId: string, file: File, kind = 'generic') => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法上传')
+      return null
+    }
+    const artifact = await uploadArtifact({ workflowId, file, kind })
+    await refreshArtifactsByWorkflowId(workflowId)
+    updateNotice(`上传完成：${file.name}`)
+    return artifact
+  }
+
+  const applyContractFixesForWorkflow: WorkspaceStore['applyContractFixes'] = async (workflowId) => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法自动修复')
+      return null
+    }
+    const result = await applyWorkflowContractFixes(workflowId)
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? result.workflow : item)))
+    updateNotice(`自动修复完成：应用 ${result.appliedActions.filter((item) => item.status === 'applied').length} 条`)
+    return result
+  }
+
+  const rollbackContractFixesForWorkflow: WorkspaceStore['rollbackContractFixes'] = async (
+    workflowId,
+    revisionId,
+  ) => {
+    if (!backendOnline) {
+      updateNotice('后端未连接，无法回滚自动修复')
+      return null
+    }
+    const result = await rollbackWorkflowContractFixes(workflowId, revisionId)
+    setWorkflows((prev) => prev.map((item) => (item.id === workflowId ? result.workflow : item)))
+    updateNotice('已回滚到自动修复前的图版本')
+    return result
+  }
+
+  const getGraphRevisions: WorkspaceStore['getGraphRevisions'] = async (workflowId, source) => {
+    if (!backendOnline) return []
+    return fetchWorkflowGraphRevisions(workflowId, { source, limit: 30 })
+  }
+
+  const cancelRunById: WorkspaceStore['cancelRunById'] = async (runId) => {
+    if (!backendOnline) return
+    const updated = await apiCancelRun(runId)
+    setRuns((prev) => prev.map((item) => (item.id === runId ? updated : item)))
+    await refreshWorkflows()
+    updateNotice(`已请求取消任务：${runId.slice(-8)}`)
+  }
+
+  const retryRunById: WorkspaceStore['retryRunById'] = async (runId, options) => {
+    if (!backendOnline) return
+    const created = options ? await retryRunWithStrategy(runId, options) : await apiRetryRun(runId)
+    setRuns((prev) => [created, ...prev])
+    await refreshWorkflows()
+    updateNotice(`已重试任务：${runId.slice(-8)}`)
+  }
+
+  const retryRunFromFailedNodeById: WorkspaceStore['retryRunFromFailedNodeById'] = async (runId, options) => {
+    if (!backendOnline) return
+    const created = await apiRetryRunFromFailedNode(runId, options)
+    setRuns((prev) => [created, ...prev])
+    await refreshWorkflows()
+    updateNotice(`已从失败节点续跑：${runId.slice(-8)}`)
+  }
+
+  const batchRunAction: WorkspaceStore['batchRunAction'] = async (payload) => {
+    if (!backendOnline) return { total: 0, success: 0, failed: 0 }
+    const result = await apiBatchRunAction(payload)
+    await refreshRuns()
+    await refreshWorkflows()
+    updateNotice(`批量${payload.action === 'cancel' ? '取消' : '重试'}完成：${result.success}/${result.total}`)
+    return { total: result.total, success: result.success, failed: result.failed }
   }
 
   const value: WorkspaceStore = {
@@ -287,14 +425,37 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     templates,
     runs,
     nodeLibrary,
+    artifactsByWorkflowId,
     reports,
-    getGraphByWorkflowId: (workflowId) => graphs[workflowId],
+    runLogsByRunId,
+    nodeStatesByRunId,
+    loading,
+    backendOnline,
+    getGraphByWorkflowId,
+    getArtifactsByWorkflowId,
+    getLatestRunByWorkflowId,
+    getRunLogs,
+    getNodeStates,
     createWorkflow,
     cloneTemplate,
+    publishTemplate,
+    toggleTemplateSubscription,
+    updateTemplateMeta,
+    deleteTemplateById,
     saveWorkflowGraph,
     saveWorkflowDraft,
     runWorkflow,
-    getReportByWorkflowId: (workflowId) => reports[workflowId],
+    getReportByWorkflowId,
+    refreshExecutionByWorkflowId,
+    refreshArtifactsByWorkflowId,
+    uploadArtifactForWorkflow,
+    applyContractFixes: applyContractFixesForWorkflow,
+    rollbackContractFixes: rollbackContractFixesForWorkflow,
+    getGraphRevisions,
+    cancelRunById,
+    retryRunById,
+    retryRunFromFailedNodeById,
+    batchRunAction,
     notice,
   }
 

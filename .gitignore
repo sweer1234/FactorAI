@@ -1,0 +1,14 @@
+# Python backend
+server/.venv/
+server/__pycache__/
+server/**/*.pyc
+server/factorai.db
+factorai.db
+server_artifacts/
+
+# Node
+web/node_modules/
+web/dist/
+
+# OS
+.DS_Store

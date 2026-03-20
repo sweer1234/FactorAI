@@ -10,6 +10,7 @@ npm run dev
 ```
 
 默认地址：`http://localhost:5173`
+默认 API：`http://localhost:8000/api`
 
 ## 构建与预览
 
@@ -33,3 +34,11 @@ npm run preview
 - 编辑器节点拖拽连线与自动保存
 - 一键运行并在运行中心查看状态
 - 报告随运行结果自动更新
+
+## 环境变量
+
+可通过 `.env` 指定后端地址：
+
+```bash
+VITE_API_BASE_URL=http://localhost:8000/api
+```

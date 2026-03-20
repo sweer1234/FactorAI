@@ -38,7 +38,7 @@ function resolveConfig(pathname: string) {
 export function AppShell() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { runWorkflow, saveWorkflowDraft, notice } = useWorkspace()
+  const { runWorkflow, saveWorkflowDraft, notice, backendOnline, loading } = useWorkspace()
   const config = resolveConfig(location.pathname)
   const workflowId = location.pathname.startsWith('/editor/')
     ? location.pathname.replace('/editor/', '')
@@ -50,12 +50,12 @@ export function AppShell() {
 
   const onSaveDraft = () => {
     if (!workflowId) return
-    saveWorkflowDraft(workflowId)
+    void saveWorkflowDraft(workflowId)
   }
 
   const onRunWorkflow = () => {
     if (!workflowId) return
-    runWorkflow(workflowId)
+    void runWorkflow(workflowId)
   }
 
   return (
@@ -63,7 +63,7 @@ export function AppShell() {
       <Sidebar />
       <main className="content">
         <TopBar
-          title={config.title}
+          title={loading ? `${config.title}（加载中）` : config.title}
           subtitle={config.subtitle}
           showRunActions={config.runActions}
           onCreateWorkflow={onCreateWorkflow}
@@ -71,6 +71,7 @@ export function AppShell() {
           onRunWorkflow={onRunWorkflow}
         />
         <div className="content-body">
+          {!backendOnline ? <p className="offline-tip">后端未连接，当前运行在本地演示模式。</p> : null}
           <Outlet />
         </div>
         {notice ? <div className="toast">{notice}</div> : null}

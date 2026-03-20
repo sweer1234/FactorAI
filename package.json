@@ -1,0 +1,8 @@
+{
+  "name": "factorai-root",
+  "private": true,
+  "scripts": {
+    "lint": "npm run lint --prefix web",
+    "build": "npm run build --prefix web"
+  }
+}
