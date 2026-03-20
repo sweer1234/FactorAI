@@ -37,7 +37,8 @@ function getApiToken() {
 
 function authHeaders() {
   const token = getApiToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  if (!token) return {} as Record<string, string>
+  return { Authorization: `Bearer ${token}` }
 }
 
 interface ApiWorkflow {
@@ -638,13 +639,14 @@ function toReport(item: ApiReport): ReportSnapshot {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers ?? {})
+  headers.set('Content-Type', 'application/json')
+  for (const [key, value] of Object.entries(authHeaders())) {
+    headers.set(key, value)
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...(init?.headers || {}),
-    },
+    headers,
   })
   if (!response.ok) {
     const text = await response.text()
