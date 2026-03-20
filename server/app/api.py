@@ -35,6 +35,7 @@ from .schemas import (
     RunAlertsRead,
     RunCompareRead,
     RunMetricPointRead,
+    ObservabilityRecommendationRead,
     SLOConfigUpdateRequest,
     SLOTemplateRead,
     SLOViewRead,
@@ -44,6 +45,7 @@ from .schemas import (
     RunRead,
     TemplateRead,
     WorkflowAlertsRead,
+    WorkflowInsightsRead,
     WorkflowTrendRead,
     WorkflowCreate,
     WorkflowRead,
@@ -234,6 +236,76 @@ def _resolve_slo_thresholds(
         if value is not None:
             base[key] = int(value)
     return base
+
+
+def _build_insight_recommendations(
+    *,
+    pass_rate: float,
+    latest_summary: dict[str, int | float | str | None],
+    thresholds: dict[str, int],
+    alert_runs: int,
+) -> list[dict[str, str]]:
+    recommendations: list[dict[str, str]] = []
+    latest_p95 = float(latest_summary.get("p95_node_duration_ms", 0) or 0)
+    latest_failed = int(latest_summary.get("failed_nodes", 0) or 0)
+    latest_warn = int(latest_summary.get("warn_logs", 0) or 0)
+    latest_error = int(latest_summary.get("error_logs", 0) or 0)
+
+    if pass_rate < 0.8:
+        recommendations.append(
+            {
+                "code": "R_LOW_SLO_PASS_RATE",
+                "level": "error",
+                "message": f"SLO 通过率偏低（{pass_rate * 100:.1f}%），建议优先处理高频失败与高耗时节点。",
+                "action": "查看运行失败原因聚合，优先处理前2位失败节点，再重跑验证。",
+            }
+        )
+    if latest_p95 > float(thresholds.get("p95_node_duration_ms", 0)):
+        recommendations.append(
+            {
+                "code": "R_P95_TOO_SLOW",
+                "level": "warn",
+                "message": f"P95 节点耗时超阈值（{latest_p95:.0f}ms）。",
+                "action": "在编辑器日志中定位慢节点，减少输入字段或拆分节点并开启制品复用。",
+            }
+        )
+    if latest_failed > int(thresholds.get("failed_nodes", 0)):
+        recommendations.append(
+            {
+                "code": "R_FAILED_NODES",
+                "level": "error",
+                "message": f"失败节点数超阈值（{latest_failed}）。",
+                "action": "使用“修复历史回滚”回到稳定版本，并重新应用自动修复建议。",
+            }
+        )
+    if latest_warn > int(thresholds.get("warn_logs", 0)) or latest_error > int(thresholds.get("error_logs", 0)):
+        recommendations.append(
+            {
+                "code": "R_LOG_ALERTS",
+                "level": "warn",
+                "message": "运行日志告警/错误偏多，存在潜在数据契约或输入质量问题。",
+                "action": "检查 SLO 告警时间线，先清理重复 WARN 来源，再调整阈值策略。",
+            }
+        )
+    if alert_runs > 0:
+        recommendations.append(
+            {
+                "code": "R_ALERT_INCIDENTS",
+                "level": "warn",
+                "message": f"最近窗口内出现 {alert_runs} 次告警事件。",
+                "action": "在报告页告警事件时间线中按告警码聚类，逐项制定消警动作。",
+            }
+        )
+    if not recommendations:
+        recommendations.append(
+            {
+                "code": "R_HEALTHY",
+                "level": "info",
+                "message": "近期运行健康，建议保持当前阈值与工作流结构。",
+                "action": "可适度收紧阈值提升质量基线。",
+            }
+        )
+    return recommendations
 
 
 def _apply_contract_suggestions(
@@ -1104,6 +1176,128 @@ def get_workflow_alert_incidents(
         alert_runs=len(incidents),
         counts=counts,
         incidents=incidents,
+    )
+
+
+@router.get("/workflows/{workflow_id}/observability/insights", response_model=WorkflowInsightsRead)
+def get_workflow_observability_insights(
+    workflow_id: str,
+    window_size: int = Query(default=30, ge=1, le=300),
+    use_template: bool = Query(default=True),
+    profile: str | None = Query(default=None),
+    p95_node_duration_ms: int | None = Query(default=None, ge=1),
+    failed_nodes: int | None = Query(default=None, ge=0),
+    warn_logs: int | None = Query(default=None, ge=0),
+    error_logs: int | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    thresholds = _resolve_slo_thresholds(
+        workflow,
+        use_template=use_template,
+        profile=profile,
+        overrides={
+            "p95_node_duration_ms": p95_node_duration_ms,
+            "failed_nodes": failed_nodes,
+            "warn_logs": warn_logs,
+            "error_logs": error_logs,
+        },
+    )
+    rows = list(
+        session.exec(select(Run).where(Run.workflow_id == workflow_id).order_by(Run.created_at.desc()))
+    )[:window_size]
+    total_runs = len(rows)
+    if total_runs == 0:
+        return WorkflowInsightsRead(
+            workflow_id=workflow_id,
+            window_size=window_size,
+            health_score=100,
+            health_level="healthy",
+            pass_rate=1.0,
+            alert_runs=0,
+            total_runs=0,
+            latest_run_id=None,
+            latest_summary={},
+            thresholds=thresholds,
+            recommendations=[
+                ObservabilityRecommendationRead(
+                    code="R_EMPTY",
+                    level="info",
+                    message="暂无运行样本，建议先运行工作流生成观测数据。",
+                    action="执行至少 3 次运行后再观察趋势与告警。",
+                )
+            ],
+        )
+
+    pass_count = 0
+    alert_runs = 0
+    for row in rows:
+        summary = row.observability or {}
+        p95 = int(summary.get("p95_node_duration_ms", 0) or 0)
+        failed = int(summary.get("failed_nodes", 0) or 0)
+        warns = int(summary.get("warn_logs", 0) or 0)
+        errors = int(summary.get("error_logs", 0) or 0)
+        passed = (
+            p95 <= int(thresholds.get("p95_node_duration_ms", 0))
+            and failed <= int(thresholds.get("failed_nodes", 0))
+            and warns <= int(thresholds.get("warn_logs", 0))
+            and errors <= int(thresholds.get("error_logs", 0))
+            and row.status == "success"
+        )
+        if passed:
+            pass_count += 1
+        if get_run_alerts(session, row.id, thresholds=thresholds):
+            alert_runs += 1
+
+    pass_rate = pass_count / total_runs
+    latest = rows[0]
+    latest_raw = latest.observability or {}
+    latest_summary = {
+        "status": latest.status,
+        "created_at": latest.created_at.isoformat(),
+        "p95_node_duration_ms": int(latest_raw.get("p95_node_duration_ms", 0) or 0),
+        "failed_nodes": int(latest_raw.get("failed_nodes", 0) or 0),
+        "warn_logs": int(latest_raw.get("warn_logs", 0) or 0),
+        "error_logs": int(latest_raw.get("error_logs", 0) or 0),
+        "total_duration_ms": int(latest_raw.get("total_duration_ms", 0) or 0),
+    }
+    p95_ratio = 0.0
+    threshold_p95 = max(1, int(thresholds.get("p95_node_duration_ms", 1)))
+    if latest_summary["p95_node_duration_ms"] > threshold_p95:
+        p95_ratio = (float(latest_summary["p95_node_duration_ms"]) / threshold_p95) - 1.0
+    health_score = 100
+    health_score -= int((1.0 - pass_rate) * 40)
+    health_score -= min(20, int(p95_ratio * 20))
+    health_score -= min(20, int(latest_summary["failed_nodes"]) * 10)
+    health_score -= min(20, int(latest_summary["error_logs"]) * 10 + int(latest_summary["warn_logs"]) // 5)
+    health_score = max(0, min(100, health_score))
+    if health_score >= 85:
+        health_level = "healthy"
+    elif health_score >= 60:
+        health_level = "warning"
+    else:
+        health_level = "critical"
+
+    recommendations = _build_insight_recommendations(
+        pass_rate=pass_rate,
+        latest_summary=latest_summary,
+        thresholds={key: int(value) for key, value in thresholds.items()},
+        alert_runs=alert_runs,
+    )
+    return WorkflowInsightsRead(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        health_score=health_score,
+        health_level=health_level,
+        pass_rate=pass_rate,
+        alert_runs=alert_runs,
+        total_runs=total_runs,
+        latest_run_id=latest.id,
+        latest_summary=latest_summary,
+        thresholds=thresholds,
+        recommendations=[ObservabilityRecommendationRead(**item) for item in recommendations],
     )
 
 

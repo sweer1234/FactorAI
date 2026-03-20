@@ -1,4 +1,5 @@
 import type {
+  WorkflowInsights,
   WorkflowAlerts,
   Artifact,
   ContractCompileResult,
@@ -184,6 +185,27 @@ interface ApiWorkflowAlerts {
   alert_runs: number
   counts: Record<string, number>
   incidents: ApiAlertIncident[]
+}
+
+interface ApiObservabilityRecommendation {
+  code: string
+  level: string
+  message: string
+  action: string
+}
+
+interface ApiWorkflowInsights {
+  workflow_id: string
+  window_size: number
+  health_score: number
+  health_level: string
+  pass_rate: number
+  alert_runs: number
+  total_runs: number
+  latest_run_id?: string | null
+  latest_summary: Record<string, string | number | boolean | null>
+  thresholds: Record<string, number>
+  recommendations: ApiObservabilityRecommendation[]
 }
 
 interface ApiTrendPoint {
@@ -407,6 +429,27 @@ function toWorkflowAlerts(item: ApiWorkflowAlerts): WorkflowAlerts {
       createdAt: incident.created_at,
       status: incident.status,
       alerts: incident.alerts,
+    })),
+  }
+}
+
+function toWorkflowInsights(item: ApiWorkflowInsights): WorkflowInsights {
+  return {
+    workflowId: item.workflow_id,
+    windowSize: item.window_size,
+    healthScore: item.health_score,
+    healthLevel: item.health_level,
+    passRate: item.pass_rate,
+    alertRuns: item.alert_runs,
+    totalRuns: item.total_runs,
+    latestRunId: item.latest_run_id ?? undefined,
+    latestSummary: item.latest_summary,
+    thresholds: item.thresholds,
+    recommendations: item.recommendations.map((rec) => ({
+      code: rec.code,
+      level: rec.level,
+      message: rec.message,
+      action: rec.action,
     })),
   }
 }
@@ -750,6 +793,31 @@ export async function fetchWorkflowAlerts(
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiWorkflowAlerts>(`/workflows/${workflowId}/observability/alerts${suffix}`)
   return toWorkflowAlerts(data)
+}
+
+export async function fetchWorkflowInsights(
+  workflowId: string,
+  params?: {
+    windowSize?: number
+    useTemplate?: boolean
+    profile?: string
+    p95NodeDurationMs?: number
+    failedNodes?: number
+    warnLogs?: number
+    errorLogs?: number
+  },
+) {
+  const query = new URLSearchParams()
+  if (params?.windowSize) query.set('window_size', String(params.windowSize))
+  if (typeof params?.useTemplate === 'boolean') query.set('use_template', String(params.useTemplate))
+  if (params?.profile) query.set('profile', params.profile)
+  if (params?.p95NodeDurationMs) query.set('p95_node_duration_ms', String(params.p95NodeDurationMs))
+  if (typeof params?.failedNodes === 'number') query.set('failed_nodes', String(params.failedNodes))
+  if (typeof params?.warnLogs === 'number') query.set('warn_logs', String(params.warnLogs))
+  if (typeof params?.errorLogs === 'number') query.set('error_logs', String(params.errorLogs))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiWorkflowInsights>(`/workflows/${workflowId}/observability/insights${suffix}`)
+  return toWorkflowInsights(data)
 }
 
 export async function fetchWorkflowSloView(

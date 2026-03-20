@@ -241,6 +241,27 @@ export interface WorkflowAlerts {
   incidents: AlertIncident[]
 }
 
+export interface ObservabilityRecommendation {
+  code: string
+  level: string
+  message: string
+  action: string
+}
+
+export interface WorkflowInsights {
+  workflowId: string
+  windowSize: number
+  healthScore: number
+  healthLevel: string
+  passRate: number
+  alertRuns: number
+  totalRuns: number
+  latestRunId?: string
+  latestSummary: Record<string, string | number | boolean | null>
+  thresholds: Record<string, number>
+  recommendations: ObservabilityRecommendation[]
+}
+
 export interface SloView {
   workflowId: string
   windowSize: number

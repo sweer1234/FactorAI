@@ -823,6 +823,64 @@ select {
   font-size: 13px;
 }
 
+.tag.health.healthy {
+  border-color: #2d7d55;
+  color: #8be0b2;
+}
+
+.tag.health.warning {
+  border-color: #9b6a2c;
+  color: #ffd08a;
+}
+
+.tag.health.critical {
+  border-color: #8f3142;
+  color: #ffb4bc;
+}
+
+.insight-list {
+  display: grid;
+  gap: 8px;
+}
+
+.insight-item {
+  border: 1px solid #223a67;
+  border-radius: 10px;
+  background: #0b1325;
+  padding: 9px;
+}
+
+.insight-item header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.insight-item header span {
+  font-size: 12px;
+  color: #9eb3dc;
+}
+
+.insight-item p {
+  margin: 6px 0 4px;
+  color: #d1dfff;
+  font-size: 13px;
+}
+
+.insight-item em {
+  font-style: normal;
+  color: #8ca3d4;
+  font-size: 12px;
+}
+
+.insight-item.error {
+  border-color: #8a364c;
+}
+
+.insight-item.warn {
+  border-color: #8d6732;
+}
+
 .editor-layout {
   display: grid;
   grid-template-columns: 280px 1fr 320px;

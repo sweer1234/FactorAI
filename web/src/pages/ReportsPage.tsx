@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  fetchWorkflowInsights,
   fetchWorkflowAlerts,
   fetchWorkflowRunCompare,
   fetchWorkflowSloTemplate,
@@ -9,7 +10,7 @@ import {
   updateWorkflowSloConfig,
 } from '../api/client'
 import { useWorkspace } from '../hooks/useWorkspace'
-import type { RunCompare, SloTemplate, SloView, WorkflowAlerts, WorkflowTrends } from '../types'
+import type { RunCompare, SloTemplate, SloView, WorkflowAlerts, WorkflowInsights, WorkflowTrends } from '../types'
 
 const TREND_DEFINITIONS = [
   { key: 'p95_node_duration_ms', label: 'P95 节点耗时', color: '#62a4ff' },
@@ -43,6 +44,7 @@ export function ReportsPage() {
   const [sloTemplate, setSloTemplate] = useState<SloTemplate | null>(null)
   const [workflowTrends, setWorkflowTrends] = useState<WorkflowTrends | null>(null)
   const [workflowAlerts, setWorkflowAlerts] = useState<WorkflowAlerts | null>(null)
+  const [workflowInsights, setWorkflowInsights] = useState<WorkflowInsights | null>(null)
   const [selectedTrendMetric, setSelectedTrendMetric] = useState('p95_node_duration_ms')
   const [sloProfile, setSloProfile] = useState('auto')
   const [sloThresholds, setSloThresholds] = useState({
@@ -63,7 +65,7 @@ export function ReportsPage() {
     const runIds = workflowRuns.map((item) => item.id)
     const load = async () => {
       try {
-        const [compare, slo, template, trends, alerts] = await Promise.all([
+        const [compare, slo, template, trends, alerts, insights] = await Promise.all([
           fetchWorkflowRunCompare(workflow.id, runIds),
           fetchWorkflowSloView(workflow.id, { windowSize: 20, useTemplate: true }),
           fetchWorkflowSloTemplate(workflow.id),
@@ -73,12 +75,14 @@ export function ReportsPage() {
             useTemplate: true,
           }),
           fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true }),
+          fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true }),
         ])
         setRunCompare(compare)
         setSloView(slo)
         setSloTemplate(template)
         setWorkflowTrends(trends)
         setWorkflowAlerts(alerts)
+        setWorkflowInsights(insights)
         setSloProfile(template.profile || 'auto')
         setSloThresholds({
           p95_node_duration_ms: Number(template.thresholds.p95_node_duration_ms ?? 800),
@@ -92,6 +96,7 @@ export function ReportsPage() {
         setSloTemplate(null)
         setWorkflowTrends(null)
         setWorkflowAlerts(null)
+        setWorkflowInsights(null)
       }
     }
     void load()
@@ -121,6 +126,8 @@ export function ReportsPage() {
       setWorkflowTrends(trends)
       const alerts = await fetchWorkflowAlerts(workflow.id, { windowSize: 30, useTemplate: true })
       setWorkflowAlerts(alerts)
+      const insights = await fetchWorkflowInsights(workflow.id, { windowSize: 30, useTemplate: true })
+      setWorkflowInsights(insights)
     } finally {
       setSavingSlo(false)
     }
@@ -538,6 +545,36 @@ export function ReportsPage() {
           </>
         ) : (
           <p className="muted">暂无告警时间线数据</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h3>自动洞察建议</h3>
+          <span className={`tag health ${workflowInsights?.healthLevel ?? 'unknown'}`}>
+            {workflowInsights ? `评分 ${workflowInsights.healthScore}` : '--'}
+          </span>
+        </div>
+        {workflowInsights ? (
+          <>
+            <p className="muted">
+              通过率 {pct(workflowInsights.passRate)} · 告警运行 {workflowInsights.alertRuns}/{workflowInsights.totalRuns}
+            </p>
+            <div className="insight-list">
+              {workflowInsights.recommendations.map((item) => (
+                <article key={item.code} className={`insight-item ${item.level}`}>
+                  <header>
+                    <strong>{item.code}</strong>
+                    <span>{item.level.toUpperCase()}</span>
+                  </header>
+                  <p>{item.message}</p>
+                  <em>{item.action}</em>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">暂无自动洞察数据</p>
         )}
       </section>
     </div>

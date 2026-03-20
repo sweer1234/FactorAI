@@ -280,6 +280,27 @@ class WorkflowAlertsRead(BaseModel):
     incidents: list[AlertIncidentRead] = Field(default_factory=list)
 
 
+class ObservabilityRecommendationRead(BaseModel):
+    code: str
+    level: str
+    message: str
+    action: str
+
+
+class WorkflowInsightsRead(BaseModel):
+    workflow_id: str
+    window_size: int
+    health_score: int
+    health_level: str
+    pass_rate: float
+    alert_runs: int
+    total_runs: int
+    latest_run_id: str | None = None
+    latest_summary: dict[str, int | float | str | None] = Field(default_factory=dict)
+    thresholds: dict[str, int | float] = Field(default_factory=dict)
+    recommendations: list[ObservabilityRecommendationRead] = Field(default_factory=list)
+
+
 class SLOViewRead(BaseModel):
     workflow_id: str
     window_size: int
