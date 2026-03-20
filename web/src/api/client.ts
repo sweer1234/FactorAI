@@ -1,4 +1,5 @@
 import type {
+  ObservabilityReport,
   WorkflowAnomalies,
   WorkflowInsights,
   WorkflowAlerts,
@@ -235,6 +236,13 @@ interface ApiWorkflowAnomalies {
   anomaly_count: number
   anomaly_by_metric: Record<string, number>
   anomalies: ApiObservabilityAnomaly[]
+}
+
+interface ApiObservabilityReport {
+  workflow_id: string
+  window_size: number
+  generated_at: string
+  markdown: string
 }
 
 interface ApiTrendPoint {
@@ -508,6 +516,15 @@ function toWorkflowAnomalies(item: ApiWorkflowAnomalies): WorkflowAnomalies {
       createdAt: anomaly.created_at,
       message: anomaly.message,
     })),
+  }
+}
+
+function toObservabilityReport(item: ApiObservabilityReport): ObservabilityReport {
+  return {
+    workflowId: item.workflow_id,
+    windowSize: item.window_size,
+    generatedAt: item.generated_at,
+    markdown: item.markdown,
   }
 }
 
@@ -892,6 +909,23 @@ export async function fetchWorkflowAnomalies(
   const suffix = query.toString() ? `?${query.toString()}` : ''
   const data = await request<ApiWorkflowAnomalies>(`/workflows/${workflowId}/observability/anomalies${suffix}`)
   return toWorkflowAnomalies(data)
+}
+
+export async function fetchWorkflowInsightsReport(
+  workflowId: string,
+  params?: {
+    windowSize?: number
+    useTemplate?: boolean
+    zThreshold?: number
+  },
+) {
+  const query = new URLSearchParams()
+  if (params?.windowSize) query.set('window_size', String(params.windowSize))
+  if (typeof params?.useTemplate === 'boolean') query.set('use_template', String(params.useTemplate))
+  if (typeof params?.zThreshold === 'number') query.set('z_threshold', String(params.zThreshold))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const data = await request<ApiObservabilityReport>(`/workflows/${workflowId}/observability/insights-report${suffix}`)
+  return toObservabilityReport(data)
 }
 
 export async function fetchWorkflowSloView(

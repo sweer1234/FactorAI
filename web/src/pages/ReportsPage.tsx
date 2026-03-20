@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   fetchWorkflowAnomalies,
+  fetchWorkflowInsightsReport,
   fetchWorkflowInsights,
   fetchWorkflowAlerts,
   fetchWorkflowRunCompare,
@@ -65,6 +66,7 @@ export function ReportsPage() {
   })
   const [savingSlo, setSavingSlo] = useState(false)
   const [applyingSuggestedSlo, setApplyingSuggestedSlo] = useState(false)
+  const [exportingInsights, setExportingInsights] = useState(false)
 
   const workflowRuns = useMemo(
     () => runs.filter((item) => item.workflowId === workflowId).slice(0, 8),
@@ -249,6 +251,27 @@ export function ReportsPage() {
     anchor.download = `${workflow?.id ?? 'workflow'}-${selectedTrendMetric}-trend.csv`
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  const exportInsightsMarkdown = async () => {
+    if (!workflow?.id) return
+    setExportingInsights(true)
+    try {
+      const report = await fetchWorkflowInsightsReport(workflow.id, {
+        windowSize: 30,
+        useTemplate: true,
+        zThreshold: 2.8,
+      })
+      const blob = new Blob([report.markdown], { type: 'text/markdown;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${workflow.id}-observability-insights.md`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setExportingInsights(false)
+    }
   }
 
   const metricTrendCards = useMemo(() => {
@@ -680,6 +703,14 @@ export function ReportsPage() {
               通过率 {pct(workflowInsights.passRate)} · 告警运行 {workflowInsights.alertRuns}/{workflowInsights.totalRuns}
             </p>
             <div className="header-actions">
+              <button
+                type="button"
+                className="primary ghost mini"
+                disabled={exportingInsights}
+                onClick={() => void exportInsightsMarkdown()}
+              >
+                {exportingInsights ? '导出中…' : '导出洞察 MD'}
+              </button>
               <button
                 type="button"
                 className="primary ghost mini"

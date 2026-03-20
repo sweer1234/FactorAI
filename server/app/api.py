@@ -38,6 +38,7 @@ from .schemas import (
     RunMetricPointRead,
     ObservabilityRecommendationRead,
     ObservabilityAnomalyRead,
+    ObservabilityReportRead,
     SLOConfigUpdateRequest,
     SLOTemplateRead,
     SLOViewRead,
@@ -1438,6 +1439,124 @@ def get_workflow_observability_anomalies(
         anomaly_count=len(anomalies),
         anomaly_by_metric=anomaly_by_metric,
         anomalies=anomalies[:100],
+    )
+
+
+@router.get("/workflows/{workflow_id}/observability/insights-report", response_model=ObservabilityReportRead)
+def get_workflow_observability_report(
+    workflow_id: str,
+    window_size: int = Query(default=30, ge=1, le=300),
+    use_template: bool = Query(default=True),
+    z_threshold: float = Query(default=2.8, ge=1.0, le=10.0),
+    session: Session = Depends(get_session),
+):
+    workflow = session.get(Workflow, workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow not found")
+
+    slo_view = get_workflow_slo_view(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        use_template=use_template,
+        profile=None,
+        p95_node_duration_ms=None,
+        failed_nodes=None,
+        warn_logs=None,
+        error_logs=None,
+        session=session,
+    )
+    alerts_view = get_workflow_alert_incidents(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        use_template=use_template,
+        profile=None,
+        p95_node_duration_ms=None,
+        failed_nodes=None,
+        warn_logs=None,
+        error_logs=None,
+        session=session,
+    )
+    insights_view = get_workflow_observability_insights(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        use_template=use_template,
+        profile=None,
+        p95_node_duration_ms=None,
+        failed_nodes=None,
+        warn_logs=None,
+        error_logs=None,
+        session=session,
+    )
+    anomaly_view = get_workflow_observability_anomalies(
+        workflow_id=workflow_id,
+        metrics=None,
+        window_size=window_size,
+        z_threshold=z_threshold,
+        session=session,
+    )
+
+    lines = [
+        f"# 可观测性洞察报告 · {workflow.name}",
+        "",
+        f"- 工作流 ID：`{workflow_id}`",
+        f"- 时间窗口：最近 `{window_size}` 次运行",
+        f"- 生成时间：`{datetime.utcnow().isoformat()}`",
+        "",
+        "## 1) 健康度总览",
+        f"- 健康分：**{insights_view.health_score}**（{insights_view.health_level}）",
+        f"- SLO 通过率：**{insights_view.pass_rate * 100:.1f}%**（{insights_view.total_runs} runs）",
+        f"- 告警运行数：**{insights_view.alert_runs}**",
+        "",
+        "## 2) 阈值配置",
+        f"- p95_node_duration_ms: `{slo_view.thresholds.get('p95_node_duration_ms', 0)}`",
+        f"- failed_nodes: `{slo_view.thresholds.get('failed_nodes', 0)}`",
+        f"- warn_logs: `{slo_view.thresholds.get('warn_logs', 0)}`",
+        f"- error_logs: `{slo_view.thresholds.get('error_logs', 0)}`",
+        "",
+        "## 3) 告警分布",
+    ]
+    if alerts_view.counts:
+        for code, count in sorted(alerts_view.counts.items(), key=lambda item: item[1], reverse=True):
+            lines.append(f"- {code}: {count}")
+    else:
+        lines.append("- 最近窗口无告警事件")
+
+    lines.extend(["", "## 4) 异常检测（鲁棒 Z-Score）"])
+    if anomaly_view.anomalies:
+        lines.append(f"- 检测到异常点：**{anomaly_view.anomaly_count}**（阈值 z={anomaly_view.z_threshold}）")
+        for row in anomaly_view.anomalies[:8]:
+            lines.append(
+                f"- `{row.metric_name}` · run `{row.run_id}` · 值 {row.value:.2f} / 基线 {row.baseline:.2f} · z={row.z_score:.2f} · {row.level}"
+            )
+    else:
+        lines.append("- 当前窗口未检测到异常点")
+
+    lines.extend(["", "## 5) 自动建议"])
+    if insights_view.recommendations:
+        for rec in insights_view.recommendations[:8]:
+            lines.append(f"- [{rec.level.upper()}] `{rec.code}`：{rec.message}；建议：{rec.action}")
+    else:
+        lines.append("- 暂无建议")
+
+    lines.extend(["", "## 6) 推荐 SLO 调整"])
+    suggested = insights_view.suggested_slo_config or {}
+    if suggested:
+        lines.append(f"- profile: `{suggested.get('profile')}`")
+        overrides = suggested.get("overrides", {})
+        if overrides:
+            for key, value in overrides.items():
+                lines.append(f"  - {key}: `{value}`")
+        reason = suggested.get("reason")
+        if reason:
+            lines.append(f"- reason: {reason}")
+    else:
+        lines.append("- 无推荐调整")
+
+    return ObservabilityReportRead(
+        workflow_id=workflow_id,
+        window_size=window_size,
+        generated_at=datetime.utcnow().isoformat(),
+        markdown="\n".join(lines),
     )
 
 

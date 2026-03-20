@@ -290,6 +290,13 @@ export interface WorkflowAnomalies {
   anomalies: ObservabilityAnomaly[]
 }
 
+export interface ObservabilityReport {
+  workflowId: string
+  windowSize: number
+  generatedAt: string
+  markdown: string
+}
+
 export interface SloView {
   workflowId: string
   windowSize: number

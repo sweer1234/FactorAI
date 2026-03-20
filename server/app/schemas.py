@@ -325,6 +325,13 @@ class WorkflowAnomaliesRead(BaseModel):
     anomalies: list[ObservabilityAnomalyRead] = Field(default_factory=list)
 
 
+class ObservabilityReportRead(BaseModel):
+    workflow_id: str
+    window_size: int
+    generated_at: str
+    markdown: str
+
+
 class SLOViewRead(BaseModel):
     workflow_id: str
     window_size: int
